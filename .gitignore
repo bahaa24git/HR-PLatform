@@ -1,0 +1,11 @@
+.env
+data/
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.npm-cache/
+.pip-cache/
+.vendor/
+test-results/
+/northstar-people-source.zip

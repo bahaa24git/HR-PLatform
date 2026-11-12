@@ -1,0 +1,11 @@
+{
+  "name": "northstar-people-qa",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "check": "node --check frontend/app.js",
+    "test:e2e": "python scripts/run_browser_tests.py",
+    "start": "python -m backend.server"
+  },
+  "devDependencies": {"@playwright/test": "^1.56.0"}
+}

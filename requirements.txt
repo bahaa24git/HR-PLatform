@@ -1,0 +1,3 @@
+# Core application uses the Python 3.11+ standard library only.
+# Optional: extract text from PDF CVs. TXT and DOCX work without installation.
+pypdf>=5.0,<7

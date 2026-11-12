@@ -1,0 +1,10 @@
+CREATE TABLE kpi_templates(id INTEGER PRIMARY KEY, position_id INTEGER NOT NULL REFERENCES positions(id), title TEXT NOT NULL, target REAL NOT NULL CHECK(target>0), weight REAL NOT NULL CHECK(weight>0), direction TEXT NOT NULL DEFAULT 'higher');
+CREATE TABLE performance_notes(id INTEGER PRIMARY KEY, employee_id INTEGER NOT NULL REFERENCES employees(id), kpi_id INTEGER REFERENCES kpis(id), report_id INTEGER REFERENCES reports(id), author_id INTEGER NOT NULL REFERENCES employees(id), comment TEXT NOT NULL, request_correction INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE employee_skills(id INTEGER PRIMARY KEY, employee_id INTEGER NOT NULL REFERENCES employees(id), name TEXT NOT NULL, proficiency REAL NOT NULL CHECK(proficiency BETWEEN 0 AND 100), assessed_at TEXT NOT NULL, UNIQUE(employee_id,name));
+CREATE TABLE training_attendance(id INTEGER PRIMARY KEY, plan_id INTEGER NOT NULL REFERENCES learning_plans(id), day TEXT NOT NULL, attended INTEGER NOT NULL, notes TEXT DEFAULT '', UNIQUE(plan_id,day));
+ALTER TABLE learning_plans ADD COLUMN session_at TEXT;
+ALTER TABLE learning_plans ADD COLUMN baseline_kpi REAL DEFAULT 0;
+ALTER TABLE learning_plans ADD COLUMN followup_kpi REAL DEFAULT 0;
+ALTER TABLE resignations ADD COLUMN completed_day TEXT;
+ALTER TABLE announcements ADD COLUMN team_id INTEGER REFERENCES teams(id);
+INSERT INTO schema_versions(version) VALUES(2);
