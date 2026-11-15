@@ -61,6 +61,15 @@ def initialize(path=None, demo=True):
         db.executescript((ROOT / 'backend/migrations/003_approval_chains.sql').read_text(encoding='utf-8'))
     if not db.execute('SELECT version FROM schema_versions WHERE version=4').fetchone():
         db.executescript((ROOT / 'backend/migrations/004_hiring_link.sql').read_text(encoding='utf-8'))
+    for version,filename in [(5,'005_company_platform.sql'),(6,'006_people_governance.sql'),(7,'007_delivery_and_reporting.sql'),(8,'008_case_visibility.sql'),(9,'009_lead_status_configuration.sql'),(10,'010_advisor_history.sql')]:
+        if not db.execute('SELECT version FROM schema_versions WHERE version=?',(version,)).fetchone():
+            backup_path=path.parent/'backups'/f'{path.stem}-before-v{version}.sqlite3'
+            if str(path)!=':memory:':
+                backup_path.parent.mkdir(parents=True,exist_ok=True)
+                backup=sqlite3.connect(backup_path)
+                try:db.backup(backup)
+                finally:backup.close()
+            db.executescript((ROOT/'backend/migrations'/filename).read_text(encoding='utf-8'))
     if demo and not db.execute('SELECT id FROM users LIMIT 1').fetchone():
         seed(db)
     if demo and not db.execute('SELECT id FROM payroll LIMIT 1').fetchone():
@@ -85,6 +94,8 @@ def initialize(path=None, demo=True):
             insert(db,'kpis',dict(employee_id=k['employee_id'],period_id=prev,title=k['title'],target=k['target'],actual=round(k['actual']*.9,2),weight=k['weight'],direction=k['direction'],status='Approved'))
         for plan in rows(db,'SELECT * FROM learning_plans'):
             db.execute('UPDATE learning_plans SET session_at=?,baseline_kpi=65,followup_kpi=0 WHERE id=?',((datetime.now()+timedelta(days=3+plan['id']%5)).replace(hour=10,minute=0,second=0,microsecond=0).isoformat(),plan['id']))
+    from .platform_setup import configure
+    configure(db)
     db.commit()
     db.close()
 

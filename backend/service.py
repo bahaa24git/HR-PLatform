@@ -26,20 +26,24 @@ def notify(db, eid, title, detail):
     insert(db,'notifications',dict(employee_id=eid,title=title,detail=detail))
 
 def scope_ids(db,u):
-    if u['role']=='hr': return [r['id'] for r in rows(db,'SELECT id FROM employees')]
+    if u['role'] in ('hr','admin'): return [r['id'] for r in rows(db,'SELECT id FROM employees')]
+    if u['role'] in ('sales_leader','sales_manager'):
+        from .business import commercial_people
+        return list(commercial_people(db,u))
     if u['role']=='manager': return [r['id'] for r in rows(db,'SELECT id FROM employees WHERE department_id=?',(u['department_id'],))]
-    if u['role']=='leader': return [r['id'] for r in rows(db,'SELECT id FROM employees WHERE leader_id=? OR id=?',(u['employee_id'],u['employee_id']))]
+    if u['role']=='leader': return [r['id'] for r in rows(db,'SELECT e.id FROM employees e LEFT JOIN teams t ON t.id=e.team_id WHERE COALESCE(t.leader_id,e.leader_id)=? OR e.id=?',(u['employee_id'],u['employee_id']))]
     return [u['employee_id']]
 
 def check_employee(db,u,eid):
     require(int(eid) in scope_ids(db,u))
 
 def permission(db,u,p):
+    if u['role']=='admin':return True
     return bool(one(db,'SELECT 1 FROM role_permissions WHERE role_id=? AND permission_id=?',(u['role'],p)))
 
 def employee_view(db,u,r):
     r=dict(r)
-    if u['role']!='hr' and r['id']!=u['employee_id']:
+    if u['role'] not in ('hr','admin') and r['id']!=u['employee_id']:
         for key in ['salary_cents','annual_days','phone','email','skills']:
             r.pop(key,None)
     return r
@@ -48,18 +52,24 @@ def list_resource(db,u,table):
     require(table in CATALOG,'Unknown module',404)
     spec=CATALOG[table]
     data=rows(db,f'SELECT * FROM {table} ORDER BY id DESC')
+    if u['role']=='owner' and table=='contracts':return data
+    if u['role']=='owner' and table in ('learning_plans','reports','kpis','payroll','salary_components','leave_requests','resignations'):return []
     ids=scope_ids(db,u)
     if table=='employees':
         return [employee_view(db,u,r) for r in data if r['id'] in ids]
     if spec.get('employee'):
         data=[r for r in data if r['employee_id'] in ids or (table=='leave_requests' and r['approver_id']==u['employee_id'])]
-        if table in ('payroll','salary_components') and u['role']!='hr':
+        if table=='tasks':
+            from .business import project_ids
+            projects=project_ids(db,u)
+            data=[r for r in rows(db,'SELECT * FROM tasks ORDER BY id DESC') if r['employee_id'] in ids or r['project_id'] in projects]
+        if table in ('payroll','salary_components') and u['role'] not in ('hr','admin'):
             data=[r for r in data if r['employee_id']==u['employee_id']]
     if spec.get('recruit'):
-        require(u['role'] in ('hr','manager','leader'))
+        require(u['role'] in ('hr','admin','manager','leader'))
         jobs=rows(db,'SELECT id FROM jobs WHERE department_id=?',(u['department_id'],))
         jids={r['id'] for r in jobs}
-        if u['role']!='hr':
+        if u['role'] not in ('hr','admin'):
             if table=='jobs': data=[r for r in data if r['id'] in jids]
             elif table=='candidates': data=[r for r in data if r['job_id'] in jids]
             else:
@@ -81,10 +91,10 @@ def validate(fields,payload,partial=False):
         val=payload.get(key)
         if val is None or val=='':
             if field['required']: raise Problem(field['label']+' is required.')
-            result[key]=None if field['type'] in ('employee','department','position','team','period','date') else (0 if field['type']=='checkbox' else '')
+            result[key]=None if field.get('reference') or field['type'] in ('employee','department','position','team','period','date','project') else (0 if field['type']=='checkbox' else '')
             continue
         typ=field['type']
-        if typ in ('number','employee','department','position','team','period','course','job','candidate','leave_type'):
+        if typ in ('number','employee','department','position','team','period','course','job','candidate','leave_type','project'):
             try: val=float(val)
             except (TypeError,ValueError): raise Problem(field['label']+' must be numeric.')
             require(math.isfinite(val) and val>=0,field['label']+' must be a finite non-negative number.',400)
@@ -118,14 +128,16 @@ def create_resource(db,u,table,p):
     spec=CATALOG[table]
     require(u['role'] in spec.get('manage',[]) or spec.get('create_self'))
     p=dict(p)
+    from .people_policy import before_create, after_create
+    before_create(db,u,table,p)
     if spec.get('employee') and table!='employees' and not p.get('employee_id'):
         p['employee_id']=u['employee_id']
     v=validate(spec['fields'],p)
     if spec.get('employee') and table!='employees':
         eid=int(v.get('employee_id') or u['employee_id'])
         if u['role'] not in spec.get('manage',[]):
-            eid=int(p.get('employee_id',u['employee_id'])) if table=='reports' and u['role'] in ('hr','manager','leader') else u['employee_id']
-        check_employee(db,u,eid)
+            eid=int(p.get('employee_id',u['employee_id'])) if table=='reports' and u['role'] in ('hr','admin','manager','leader') else u['employee_id']
+        if table!='tasks':check_employee(db,u,eid)
         v['employee_id']=eid
     if table=='employees':
         v['code']='NP-'+secrets.token_hex(3).upper()
@@ -140,7 +152,7 @@ def create_resource(db,u,table,p):
     if table=='employee_skills': require(v['proficiency']<=100,'Proficiency must be 0–100.',400)
     if table=='reports':
         require(1<=v['workload']<=5 and 1<=v['clarity']<=5,'Ratings must be between 1 and 5.',400)
-        require(v['kind']!='Leader evaluation' or u['role'] in ('hr','manager','leader'),'Only leaders can submit leader evaluations.')
+        require(v['kind']!='Leader evaluation' or u['role'] in ('hr','admin','manager','leader'),'Only leaders can submit leader evaluations.')
     if table=='learning_plans': require(v['pre_score']<=100,'Scores must be between 0 and 100.',400)
     if table=='tasks': require(1<=v['complexity']<=5,'Complexity must be between 1 and 5.',400)
     if table=='resignations':
@@ -151,7 +163,7 @@ def create_resource(db,u,table,p):
         v.update(submitted=date.today().isoformat(),notice_days=notice)
     if table in ('announcements','recognition'): v['author_id']=u['employee_id'] if table=='recognition' else u['id']
     if table=='articles': v['owner_id']=u['id']
-    if table=='jobs' and u['role']!='hr': require(v['department_id']==u['department_id'])
+    if table=='jobs' and u['role'] not in ('hr','admin'): require(v['department_id']==u['department_id'])
     if table=='interviews':
         require(v['candidate_id'] in [x['id'] for x in list_resource(db,u,'candidates')])
         check_employee(db,u,v['interviewer_id'])
@@ -181,6 +193,7 @@ def create_resource(db,u,table,p):
         for emp in rows(db,"SELECT id,department_id,team_id FROM employees WHERE status!='Archived'"):
             if (not v.get('department_id') or emp['department_id']==v['department_id']) and (not v.get('team_id') or emp['team_id']==v['team_id']):
                 notify(db,emp['id'],'Company update',v['title'])
+    after_create(db,u,table,ident,{**p,**v})
     return {'id':ident,'message':'Saved successfully.'}
 
 def approval_chain(db,emp):
@@ -217,12 +230,14 @@ def ensure_balance(db,eid,year):
 
 def update_resource(db,u,table,ident,p):
     require(table in CATALOG,'Unknown module',404)
+    from .people_policy import before_update, after_update
+    previous=before_update(db,u,table,ident,p)
     visible={r['id']:r for r in list_resource(db,u,table)}
     require(ident in visible,'Record not found or outside your scope.',404)
     r=visible[ident]
     manager=u['role'] in CATALOG[table].get('manage',[])
     special={
-      'tasks':[('status','Status','select',['To do','In progress','Done']),('actual_hours','Actual hours','number',None)],
+      'tasks':[('status','Status','select',['To do','In progress','Under Review','Revision Required','Approved','Completed','Blocked','Done']),('actual_hours','Actual hours','number',None),('delay_context','Delay context / external dependencies','textarea',None)],
       'learning_plans':[('progress','Progress','number',None),('post_score','Post-assessment','number',None),('application','Practical application','textarea',None),('session_at','Training session','datetime-local',None),('baseline_kpi','KPI before training','number',None),('followup_kpi','KPI after training','number',None)],
       'reports':[('feedback','Reviewer feedback','textarea',None),('status','Status','select',['Submitted','Reviewed','Correction requested'])],
       'kpis':[('actual','Actual result','number',None),('status','Status','select',['Proposed','Approved','Review requested']),('comment','Comment','textarea',None)],
@@ -232,7 +247,7 @@ def update_resource(db,u,table,ident,p):
     }
     fields=CATALOG[table]['fields'] if manager else []
     own=r.get('employee_id')==u['employee_id']
-    if table in special and (manager or own or (table in ('reports','kpis') and u['role'] in ('hr','manager','leader'))):
+    if table in special and (manager or own or (table in ('reports','kpis') and u['role'] in ('hr','admin','manager','leader'))):
         fields=fields+[dict(name=n,label=l,type=t,required=False,options=o) for n,l,t,o in special[table] if n!='comment']
     require(bool(fields))
     if table in ('leave_requests','payroll','resignations'): raise Problem('Use the dedicated workflow action.',403)
@@ -243,7 +258,7 @@ def update_resource(db,u,table,ident,p):
     if table=='surveys' and one(db,'SELECT id FROM survey_responses WHERE survey_id=? LIMIT 1',(ident,)):
         require(not any(key in v and v[key]!=r[key] for key in ('questions','anonymous')),'Questions and anonymity cannot change after responses exist; create a new survey.',409)
     if table=='jobs' and 'openings' in v: require(v['openings']>=1 and float(v['openings']).is_integer(),'Openings must be a positive whole number.',400)
-    if 'employee_id' in v: check_employee(db,u,v['employee_id'])
+    if 'employee_id' in v and table!='tasks': check_employee(db,u,v['employee_id'])
     if table=='reports' and u['role']=='employee':
         require(set(v).issubset({'status'}) and v.get('status')=='Correction requested')
     if table=='kpis' and not manager:
@@ -253,13 +268,6 @@ def update_resource(db,u,table,ident,p):
     if 'target' in v: require(v['target']>0,'Target must exceed zero.',400)
     if 'weight' in v: require(v['weight']>0,'Weight must exceed zero.',400)
     if table=='learning_plans' and 'progress' in v: v['status']='Completed' if v['progress']==100 else 'In progress'
-    if table=='learning_plans' and v.get('progress')==100:
-        course=one(db,'SELECT skill FROM courses WHERE id=?',(r['course_id'],))
-        emp=one(db,'SELECT skills FROM employees WHERE id=?',(r['employee_id'],))
-        skills=json.loads(emp['skills'])
-        if course['skill'] not in skills:
-            skills.append(course['skill'])
-            db.execute('UPDATE employees SET skills=? WHERE id=?',(json.dumps(skills),r['employee_id']))
     if table=='articles': v['updated_at']=datetime.now().isoformat(timespec='seconds')
     if table=='candidates' and v.get('stage')=='Hired':
         require(bool(r.get('employee_id')),'Use Hire & onboard to record a human hiring decision and create the employee.',400)
@@ -279,13 +287,14 @@ def update_resource(db,u,table,ident,p):
         if v.get('status')=='Archived': db.execute('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE employee_id=?)',(ident,))
         if 'email' in v: db.execute('UPDATE users SET email=? WHERE employee_id=?',(v['email'],ident))
     db.execute(f'UPDATE {table} SET '+','.join(k+'=?' for k in v)+' WHERE id=?',list(v.values())+[ident])
+    after_update(db,u,table,ident,p,previous)
     return {'message':'Updated successfully.'}
 
 def decide_leave(db,u,ident,p):
     r=one(db,'SELECT * FROM leave_requests WHERE id=?',(ident,))
     require(r is not None,'Request not found.',404)
     require(r['employee_id']!=u['employee_id'],'You cannot approve your own request.')
-    require(u['role']=='hr' or (r['approver_id']==u['employee_id'] and u['role'] in ('leader','manager','owner')))
+    require(u['role'] in ('hr','admin') or (r['approver_id']==u['employee_id'] and u['role'] in ('leader','manager','owner')))
     require(r['status']=='Pending','This request has already been decided.',409)
     decision=p.get('decision')
     require(decision in ('Approved','Rejected'),'Choose approve or reject.',400)
@@ -321,6 +330,7 @@ def decide_leave(db,u,ident,p):
     return {'message':'Request '+decision.lower()+'.'}
 
 def attendance_action(db,u,p):
+    require(u['role']!='owner','The owner account does not participate in employee attendance.')
     emp=one(db,'SELECT * FROM employees WHERE id=?',(u['employee_id'],))
     s=settings(db)
     geo=s['geofence']
@@ -380,12 +390,12 @@ def simulate_payroll(db,eid,month):
     return dict(employee_id=eid,month=month,basic_cents=basic,additions_cents=adds,deductions_cents=deductions,gross_cents=basic+adds,net_cents=basic+adds-deductions,breakdown=json.dumps(breakdown))
 
 def payroll_action(db,u,p):
-    require(u['role']=='hr')
+    require(u['role'] in ('hr','admin'))
     month=str(p.get('month',''))
     if p.get('action')=='simulate': return simulate_payroll(db,int(p['employee_id']),month)
     if p.get('action')=='process':
         count=0
-        for e in rows(db,"SELECT id FROM employees WHERE status IN ('Active','Onboarding','Notice')"):
+        for e in rows(db,"SELECT e.id FROM employees e LEFT JOIN users u ON u.employee_id=e.id WHERE e.status IN ('Active','Onboarding','Notice') AND COALESCE(u.role,'employee')!='owner'"):
             old=one(db,'SELECT * FROM payroll WHERE employee_id=? AND month=?',(e['id'],month))
             if old and old['status']=='Approved': continue
             v=simulate_payroll(db,e['id'],month)
@@ -397,6 +407,8 @@ def payroll_action(db,u,p):
         r=one(db,'SELECT * FROM payroll WHERE id=?',(int(p['id']),))
         require(r and r['status']=='Draft','Only draft payroll can be approved.',409)
         db.execute("UPDATE payroll SET status='Approved' WHERE id=?",(r['id'],))
+        from .business import audit
+        audit(db,u,'payroll',r['id'],'Approved',r,{'status':'Approved'})
         notify(db,r['employee_id'],'Your payslip is ready','Approved payroll for '+r['month']+' is available.')
         return {'message':'Payroll approved.'}
     raise Problem('Unknown payroll action.')
@@ -404,7 +416,7 @@ def payroll_action(db,u,p):
 def lookups(db,u):
     ids=scope_ids(db,u)
     # A name-only directory supports recognition without exposing private employee fields.
-    return {'departments':rows(db,'SELECT * FROM departments'),'positions':rows(db,'SELECT * FROM positions'),'teams':rows(db,'SELECT * FROM teams'),'employees':[dict(id=r['id'],name=r['name']) for r in rows(db,'SELECT id,name FROM employees')], 'scoped_employees':[dict(id=r['id'],name=r['name']) for r in rows(db,'SELECT id,name FROM employees') if r['id'] in ids], 'leave_types':rows(db,'SELECT * FROM leave_types'),'courses':rows(db,'SELECT * FROM courses'),'periods':rows(db,'SELECT * FROM performance_periods'),'case_handlers':rows(db,"SELECT u.id,e.name FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.role='hr'") if u['role']=='hr' else []}
+    return {'departments':rows(db,'SELECT * FROM departments'),'positions':rows(db,'SELECT * FROM positions'),'teams':rows(db,'SELECT * FROM teams'),'employees':[dict(id=r['id'],name=r['name']) for r in rows(db,'SELECT id,name FROM employees')], 'scoped_employees':[dict(id=r['id'],name=r['name']) for r in rows(db,'SELECT id,name FROM employees') if r['id'] in ids], 'leave_types':rows(db,'SELECT * FROM leave_types'),'courses':rows(db,'SELECT * FROM courses'),'periods':rows(db,'SELECT * FROM performance_periods'),'case_handlers':rows(db,"SELECT u.id,e.name FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.role='hr'") if u['role'] in ('hr','admin') else []}
 
 def dashboard(db,u):
     ids=scope_ids(db,u)
@@ -441,7 +453,7 @@ def dashboard(db,u):
     archived=sum(e['status']=='Archived' for e in scoped)
     candidates=rows(db,'SELECT stage,COUNT(*) AS count FROM candidates GROUP BY stage') if aggregate else []
     payroll_total=sum(e['salary_cents'] for e in active) if aggregate else None
-    result=dict(total_employees=len(active),present=len(today_att),pending=sum(r['status']=='Pending' for r in leaves),performance=score,leave_balance=balance['entitlement']-balance['used'],today=one(db,'SELECT * FROM attendance WHERE employee_id=? AND day=?',(u['employee_id'],today)),tasks_total=len(tasks),tasks_done=sum(t['status']=='Done' for t in tasks),overdue=sum(t['status']!='Done' and t['due']<today for t in tasks),learning_progress=round(sum(p['progress'] for p in plans)/len(plans)) if plans else 0,departments=dep,attendance_trend=trend,contract_alerts=contracts,recruitment=candidates,payroll_total_cents=payroll_total,turnover_percent=round(100*archived/len(scoped),1) if scoped else 0,resignations=len(resignations),retention_reasons=[r['reason'] for r in resignations] if u['role']=='hr' else [],announcements=list_resource(db,u,'announcements')[:5],notifications=rows(db,'SELECT * FROM notifications WHERE employee_id=? ORDER BY id DESC LIMIT 20',(u['employee_id'],)),tasks=sorted(tasks,key=lambda t:t['due'])[:6],recognition=list_resource(db,u,'recognition')[:4])
+    result=dict(total_employees=len(active),present=len(today_att),pending=sum(r['status']=='Pending' for r in leaves),performance=score,leave_balance=balance['entitlement']-balance['used'],today=one(db,'SELECT * FROM attendance WHERE employee_id=? AND day=?',(u['employee_id'],today)),tasks_total=len(tasks),tasks_done=sum(t['status']=='Done' for t in tasks),overdue=sum(t['status']!='Done' and t['due']<today for t in tasks),learning_progress=round(sum(p['progress'] for p in plans)/len(plans)) if plans else 0,departments=dep,attendance_trend=trend,contract_alerts=contracts,recruitment=candidates,payroll_total_cents=payroll_total,turnover_percent=round(100*archived/len(scoped),1) if scoped else 0,resignations=len(resignations),retention_reasons=[r['reason'] for r in resignations] if u['role'] in ('hr','admin') else [],announcements=list_resource(db,u,'announcements')[:5],notifications=rows(db,'SELECT * FROM notifications WHERE employee_id=? ORDER BY id DESC LIMIT 20',(u['employee_id'],)),tasks=sorted(tasks,key=lambda t:t['due'])[:6],recognition=list_resource(db,u,'recognition')[:4])
     result['contract_alert_count']=len(contracts)
     if u['role']=='owner':
         result['contract_alerts']=[]

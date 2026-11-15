@@ -1,9 +1,9 @@
 {
-  "name": "northstar-people-qa",
+  "name": "northstar-company-os",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "scripts": {
-    "check": "node --check frontend/app.js",
+    "check": "node --check frontend/app.js && node --check frontend/ui.js && node --check frontend/business-ui.js && node --check frontend/people-ui.js && node --check frontend/translations.js",
     "test:e2e": "python scripts/run_browser_tests.py",
     "start": "python -m backend.server"
   },

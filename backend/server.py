@@ -18,7 +18,7 @@ from .db import rows, one, ROOT, verify_password
 from .catalog import CATALOG
 from .service import Problem, require, settings, scope_ids, list_resource, create_resource, update_resource, decide_leave, attendance_action, payroll_action, lookups, dashboard, check_employee
 from .workflows import cases, survey, resignation_action, upload, documents, save_settings, provision, hire_candidate
-from .ai import ask, AGENTS
+from .ai import ask, AGENTS, conversation_history
 from .insights import attendance_report, workforce, performance_insights, performance_note, apply_templates, training, assign_team
 
 LOGIN_ATTEMPTS={}
@@ -86,14 +86,16 @@ class Handler(BaseHTTPRequestHandler):
             if method!='GET':
                 self.origin_check()
                 p=self.read_body()
-                db.execute('BEGIN IMMEDIATE')
+                if path!='/api/ai':db.execute('BEGIN IMMEDIATE')
             else: p={}
             result,extra=self.api(db,method,path,p)
             db.commit()
             self.reply(result,headers=extra)
+        except ConnectionError:
+            db.rollback()
         except Problem as e:
             db.rollback()
-            self.reply({'error':str(e)},e.status)
+            self.reply({'error':str(e),**({'details':e.details} if hasattr(e,'details') else {})},e.status)
         except sqlite3.IntegrityError:
             db.rollback()
             self.reply({'error':'This record conflicts with existing data or references an invalid record.'},409)
@@ -128,6 +130,9 @@ class Handler(BaseHTTPRequestHandler):
             secure='; Secure' if os.getenv('COOKIE_SECURE')=='1' else ''
             return public_user(user),{'Set-Cookie':'hr_session='+token+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200'+secure}
         u=self.user(db)
+        from .platform_api import route
+        platform_result=route(db,u,method,path,p,self.path)
+        if platform_result is not None:return platform_result
         if path=='/api/logout' and method=='POST':
             cookie=SimpleCookie(self.headers.get('Cookie',''))
             db.execute('DELETE FROM sessions WHERE token_hash=?',(hashlib.sha256(cookie['hr_session'].value.encode()).hexdigest(),))
@@ -136,7 +141,11 @@ class Handler(BaseHTTPRequestHandler):
             config=settings(db)
             config['ai_mode']='live' if os.getenv('AI_MODE')=='live' and os.getenv('AI_API_KEY') and os.getenv('AI_MODEL') else 'demo'
             return {'user':u,'catalog':CATALOG,'lookups':lookups(db,u),'settings':config,'agents':AGENTS},None
-        if path=='/api/dashboard' and method=='GET': return dashboard(db,u),None
+        if path=='/api/dashboard' and method=='GET':
+            if u['role']=='owner':
+                from .business import analytics
+                return {**analytics(db,u),'total_employees':one(db,"SELECT COUNT(*) AS n FROM employees WHERE status!='Archived'")['n']},None
+            return dashboard(db,u),None
         if parts[0]=='resources' and len(parts)>=2:
             table=parts[1]
             if method=='GET' and len(parts)==2: return list_resource(db,u,table),None
@@ -176,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/accounts' and method=='POST': return provision(db,u,p),None
         if len(parts)==3 and parts[0]=='candidates' and parts[2]=='hire' and method=='POST': return hire_candidate(db,u,int(parts[1]),p),None
         if path=='/api/periods' and method=='POST':
-            require(u['role'] in ('hr','manager','leader'))
+            require(u['role'] in ('hr','manager','leader','sales_leader'))
             from .catalog import f
             v=validate([f('name','Name'),f('start','Start','date'),f('end','End','date')],p)
             require(v['end']>=v['start'],'Invalid date range.',400)
@@ -188,6 +197,7 @@ class Handler(BaseHTTPRequestHandler):
             require(v['payroll_factor']<=1,'Unpaid fraction must be 0–1.',400)
             require(not v['deduct_balance'] or v['unit']=='days','Annual leave balance is measured in days.',400)
             return {'id':database.insert(db,'leave_types',v),'message':'Request type created.'},None
+        if path=='/api/ai/history' and method=='GET': return conversation_history(db,u),None
         if path=='/api/ai' and method=='POST': return ask(db,u,p),None
         if path=='/api/notifications' and method=='POST':
             db.execute('UPDATE notifications SET read=1 WHERE employee_id=?',(u['employee_id'],))
@@ -206,7 +216,7 @@ class Handler(BaseHTTPRequestHandler):
         raise Problem('Endpoint not found.',404)
 
     def static(self,path):
-        files={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/styles.css':'styles.css'}
+        files={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/styles.css':'styles.css','/ui.js':'ui.js','/business-ui.js':'business-ui.js','/people-ui.js':'people-ui.js','/translations.js':'translations.js','/report-format.js':'report-format.js'}
         if path not in files: return self.reply({'error':'Not found'},404)
         target=ROOT/'frontend'/files[path]
         payload=target.read_bytes()

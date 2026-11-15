@@ -1,31 +1,23 @@
-# Northstar People
+# Northstar Company OS
 
-A new, independent AI-powered HR graduation application. Python backend, SQLite relational database, responsive English/Arabic frontend, fictional demonstration data, five roles, and nine AI service boundaries (one orchestrator and eight specialists).
+An integrated company-management application for a digital marketing and media-production company: CRM → sales → clients/contracts → projects/campaigns → tasks/deliverables → employee performance, with HR, analytics and a permission-aware real-model advisor.
 
-All source is in this directory. Nothing from neighboring HR projects was imported. Runtime data and credentials stay inside this project's own directories.
+This upgrades the existing Northstar HR application **in place**. Existing employee, contract, attendance, leave, payroll and report records are retained. Commercial records start empty; no fabricated revenue or CRM transactions are inserted during normal startup. Historical fictional HR data from the original graduation demo remains clearly developmental.
 
-## Run locally
+## Start
 
-Requires **Python 3.11+**. The core application has **no required package installation**, frontend build step, or external service dependency.
+Requirements: Python 3.11+. Node.js is required only for browser tests, not to run the application.
 
 From this directory:
-
-```powershell
-python -m backend.server
-```
-
-Open **http://127.0.0.1:8000**. The first startup applies four versioned SQL migrations and creates the fictional demonstration company. Later startups retain your changes. Stop with Ctrl+C.
-
-Use `py` in place of `python` if that is how Python is installed on your Windows machine.
-
-To enable PDF CV text extraction:
 
 ```powershell
 python -m pip install -r requirements.txt --target .vendor
 python -m backend.server
 ```
 
-The server automatically uses the project-local `.vendor` directory. TXT and DOCX CV extraction works without installing anything. Scanned/image-only PDFs need external OCR and are not supported by this parser.
+Open **http://127.0.0.1:8000**. Stop with Ctrl+C. Use `py` instead of `python` if that is your Windows Python launcher.
+
+PDF exports require the installed ReportLab, Arabic reshaper and bidi libraries. PDF CV extraction uses pypdf. These are local libraries; core business workflows do not require any paid service.
 
 Optional configuration:
 
@@ -34,171 +26,150 @@ Copy-Item .env.example .env
 python -m backend.server --host 127.0.0.1 --port 8000
 ```
 
-Environment variables override `.env`. `HR_DATABASE` selects a separate database path. To start a fresh demonstration without deleting any data, use a new path:
+An existing `.env` must be preserved rather than overwritten. Process environment variables take precedence. `HR_DATABASE` selects a different database file; default is `data/hr.sqlite3`. All configuration and runtime files remain inside this project by default.
 
 ```powershell
-$env:HR_DATABASE = 'data/new-demo.sqlite3'
+$env:HR_DATABASE = 'data/separate-company.sqlite3'
 python -m backend.server
 ```
 
-The default host is loopback. This is a local graduation/demo server; it is not a production deployment server. Docker is unnecessary for this stack, so local instructions are the supported installation path.
+Starting with a new path creates a fresh fictional HR demonstration and empty commercial workspace. `--no-demo` initializes schema/reference configuration without demonstration employees; it is intended for developers provisioning an organization, not as an administrator-setup wizard.
 
-## Demo accounts
+## Existing demo logins
 
-**Development only. All records and people are fictional.** Every listed account has password **`Demo2026!`**. There is no universal password mechanism: each account has its own salted PBKDF2 password hash.
+Development only; fictional people. Password: **`Demo2026!`** for each existing seeded account. Passwords are stored as independently salted PBKDF2 hashes; there is no universal-login mechanism.
 
-| Role | Email | Scope |
-| --- | --- | --- |
-| Company Owner | `owner@demo.local` | Company aggregates, publishing, personal records and explicitly assigned approvals |
-| HR Administrator | `hr@demo.local` | HR operations, payroll, private documents and confidential case handling |
-| Department Manager | `manager@demo.local` | Creative Studio department |
-| Team Leader | `leader@demo.local` | Assigned Creative Studio employees |
-| Second Team Leader | `leader2@demo.local` | Assigned Growth & Marketing employees |
-| Employee | `nora@demo.local` | Nora's own private records |
-| Employee | `sara@demo.local` | Sara's own private records |
-
-Other fictional employee accounts: `youssef`, `karim`, `dina`, `leila`, `ziad`, each at `@demo.local`.
-
-The seed contains four departments, 12 employees, nine positions, five job-specific sets of KPI templates, two evaluation periods, attendance, learning plans, prior-month approved payroll, pending leave requests, three candidates, interviews, contracts, onboarding tasks, surveys, announcements, recognition, policies and notifications.
-
-## Implemented modules
-
-| Module | Working behavior and where to find it |
+| Role | Account |
 | --- | --- |
-| Company home | Create/edit/publish/archive announcements, news, policies and events; pin notices; department/team targeting; publication notifications; event calendar and ICS export. |
-| My dashboard | Database-derived workforce, leave, attendance, KPI achievement, task completion, workload, learning, upcoming training/events, payroll summaries, recruitment pipeline, contract/probation alerts and notifications. Metrics and available navigation follow role scope. |
-| Employees | Create/edit/archive, search, positions and required skills, team/department/manager/leader assignments, work modes, salary restricted to HR/self, profile changes and promotion/transfer history, account provisioning. Profiles and module navigation share the same employee ID. |
-| Attendance and leave | Check in/out, actual hours, late/early minutes, overtime, history, missing-attendance review indicators, configurable geofence exemptions, configurable request types and leave counting, configurable approval chains, reasons and history, balance updates only after final approval, notifications and payroll inputs. |
-| Payroll | Integer minor-unit storage, Decimal rounding, basic pay, reviewed additions/deductions with reasons, overtime, optional late deductions, approved unpaid leave, simulation, monthly draft processing, locked approval and itemized printable payslips. Employees see only their own payroll. |
-| Performance | Role-specific KPI libraries for designers, media buyers, content creators, social specialists and sales; custom roles/templates; targets, weights, higher/lower scoring, periods, objective approval, actual results, period comparison, leader evaluations, employee comments and correction requests. |
-| Learning | Course/program library, required-versus-recorded skills, assessments, personalized plans, objectives, deadlines, sessions, attendance, completion, pre/post assessment, costs, duration, practical application, before/after KPI and training impact view. |
-| Recruitment | Headcount/capacity evidence, editable AI job-description drafts, vacancies, private CV upload, TXT/DOCX/PDF extraction, job-skill comparisons, candidate pipeline, scheduled interviews, consistent skill/communication scorecards, human hiring that creates a linked employee and onboarding checklist. |
-| Records/contracts | Private file upload/download, document categories, employment contracts, individual notice periods, expiry and probation alerts, profile and employment history. |
-| Onboarding | Per-employee progress and configurable checklist items for information, documents, contract, introduction and initial goals; linked account and role provisioning. |
-| Complaints/suggestions | Identified or anonymous submission, cryptographically random reference and separate secret, token-based tracking/follow-up, handler assignment, status/resolution history and deadlines. Only HR has case-handler permission in the demo. |
-| Retention/offboarding | Contract/policy notice validation, resignation notification and acknowledgment, handover/assets/documents/exit interview/settlement/access checklist, completion and employee archiving, six-month headcount and turnover trends, department departures, tenure and illustrative replacement estimates. |
-| Monthly reports | Accomplishments/tasks, strengths/work quality, challenges, development needs, skills, support, workload and clarity ratings, suggestions, leader feedback, comments and corrections. |
-| Engagement | Configurable questions, opening/closing dates, response receipt tracking, identified/anonymous mode disclosure, aggregate question and department results with a minimum privacy threshold. |
-| Tasks/workload | Employee or team-wide assignment, due date, priority, complexity, estimated/actual effort, status, completion, overdue indicators and capacity analysis feeding AI staffing advice. |
-| Recognition | Authorized appreciation with contribution narrative, badges and shared recognition feed. No automated attendance/activity leaderboard. |
-| Knowledge base | Official articles with category, owner, timestamps and publication status; search; approved/current evidence used by the assistant. |
-| Unified AI assistant | Permission-scoped orchestrator routing, eight specialist evidence builders, structured real-provider integration, validation, caching, provider-error fallback, visible demo/live disclosure and read-only advisory output. |
+| Owner | `owner@demo.local` |
+| HR Administrator | `hr@demo.local` |
+| Department Manager | `manager@demo.local` |
+| Creative Team Leader | `leader@demo.local` |
+| Growth Team Leader | `leader2@demo.local` |
+| Employee | `nora@demo.local` |
+| Employee | `sara@demo.local` |
 
-## Demonstration walkthrough
+Existing other employee accounts (`youssef`, `karim`, `dina`, `leila`, `ziad` at `@demo.local`) are retained.
 
-1. Log in as **HR**. Open People, create an employee, edit their job or department, and view the recorded history. Use **Create user account** in their profile for a real login.
-2. Log in as **Nora**, check in/out, and submit time off. Log in as **Lina** (`leader`) or HR and decide it. Return to Nora to see the updated balance and notification. Click **View** on a leave request to inspect the approval history.
-3. As HR, add a salary adjustment with a reason, simulate a salary, process the current payroll month, review an itemized slip, then approve it. Nora can view/print only her own slips.
-4. In Performance, create a period and **Apply role KPIs** to Nora. Approve objectives, update actuals, and compare periods. Employees can add a comment and request correction.
-5. In Learning & growth, assign a course, update progress/assessments and application, record attendance, and view training impact. Missing skill records are treated as incomplete evidence, not proof of inability.
-6. In Recruitment, upload a TXT/DOCX/PDF CV, inspect candidate comparison, schedule/score an interview, move candidate stages and choose **Hire & onboard** after human review. This creates the employee and onboarding tasks.
-7. Submit an anonymous case as an employee. **Save the reference and token immediately**. Track and follow up using those credentials. The case is intentionally absent from the employee's identity-linked case list; HR can handle it without an employee identifier.
-8. Respond to the pulse survey and view aggregate results as HR. Small department groups remain suppressed.
-9. Submit a resignation with the applicable notice. HR acknowledges it, completes the offboarding checklist, records an exit interview and settlement review, and archives the employee. Access closes; employment history remains.
-10. Use the globe button for Arabic and RTL. Ask the assistant about leave, policies, learning, performance or permitted workforce insights.
+New roles are supported: Sales Employee, Sales Team Leader, Sales Contracts Manager, Project Manager, Accounting, Executive Management and Administrator. To provision them, HR creates/updates an employee with department/team/seniority, then creates their account from the employee record or changes an existing account through **Users & roles**.
 
-## Policies and calculations
+The configurable organization includes Sales Atlas and Sales Horizon, seniority levels, and reference departments/positions for Operations, PR, Content, Media Buying, Graphic Design, Reels, Camera Operators, Editing, Accounting and Executive Management. Existing People & Culture/creative teams and their IDs are retained rather than destructively merged or renamed. Assign team leaders and the supervising sales manager under **Organization structure → Teams**. The sales manager can supervise both teams through the teams' manager field or explicit team-access grants.
 
-HR → Settings edits validated company settings. Job positions, KPI templates, course content, request types, contracts and checklists have dedicated forms.
+The normal application does not manufacture six new sales employees or commercial transactions. The isolated browser test fixture creates two leaders, three differently senior employees per sales team, a contracts manager, a project manager and an accountant for reproducible QA.
 
-- `start_hour`, `end_hour`, `grace_minutes`, `workdays` and individual work modes govern attendance. Python weekday numbers: Monday 0, Sunday 6. Flexible employees are not assessed against fixed start/end times.
-- `geofence.enabled` defaults false. `apply_remote` defaults false and covers remote/flexible exemptions. Coordinates and radius are configurable. Browser geolocation is requested only when required by policy. Browser-reported location can be spoofed; this is an attendance aid, not proof of physical presence.
-- `approval_chain`, e.g. `["leader", "manager", "hr"]`, resolves employee assignments in order. Duplicate approvers collapse. Missing or self assignments fall back to another HR user. Explicit `owner` stages are supported. HR can make a recorded authorized override at the current stage. Final approval alone updates balance and payroll inputs. Existing requests keep their created chain.
-- `leave_count_mode` is `calendar` by default; use `workdays` for scheduled-day counting. Day units must match the selected inclusive date range under that policy. Hours-based permissions validate against the selected date range. Overlapping pending/approved requests are rejected. Calendar-year boundaries require separate requests; no accrual/carryover engine is included.
-- `approval_role` is retained as a legacy fallback; use `approval_chain` for current configuration.
-- Salary amounts and course costs are in **minor units** (100 cents/EGP). Gross = basic + approved additions + configured overtime. Net = gross − approved deductions − applicable configured attendance adjustments. No AI-generated deduction is accepted.
-- Hourly base = basic / configured monthly working days / daily scheduled hours. Approved late-arrival permission offsets corresponding late minutes. Absence indicators never automatically deduct pay. Statutory tax/insurance calculations are outside this demo.
-- Approved payroll is immutable. Reprocessing replaces drafts only. Policy changes affect future calculations, not previously approved slips.
-- Employee notice uses their latest active contract, falling back to the company setting. It is never a fixed constant in the workflow.
-- Monthly turnover = completed departures / average opening and closing headcount. Replacement cost is an explicitly illustrative three months of base salary per completed departure.
-- Times use the host machine's local clock; run the demonstration host in the company's timezone (Africa/Cairo for this seed). The stored timezone setting is descriptive in this version, not a timezone conversion engine.
+## Working product areas
 
-## AI configuration and boundaries
+| Area | Implemented workflows |
+| --- | --- |
+| CRM | Companies/clients, multiple contacts, leads, sources, qualification/score, team/employee ownership, duplicate detection, next follow-up, activities, account timelines, private attachments, custom fields, search, status/team/owner/date filters, sorting, column selection, saved views, atomic CSV import and safe CSV export. |
+| Sales | Configurable visual pipeline, drag/drop and keyboard/button stage moves, loss reasons, probabilities and dates, auditable stage/ownership changes, lead-to-company/contact/deal conversion, explicit won-deal-to-client-contract conversion, individual/team targets, team comparison and forecasts. |
+| Quotations/proposals | Multiple service lines, quantities, integer minor-unit prices, Decimal totals and discounts, new versions retaining prior versions, internal approval/comments, client review/acceptance, PDF export and accepted-proposal conversion to draft contract. |
+| Client contracts | Separate from employment contracts; fees, currency, dates, renewal, services, payment terms, ownership, approval and private attachments. Approval is required before project creation. Converted deal client/outcome/value are protected. |
+| Projects/campaigns | Approved-contract/client linkage, manager, cross-department membership, templates, milestones, risks/mitigation, project tasks/dependencies, recorded outcomes, campaign objective/channel/schedule/advertising budget/spend/results. |
+| Department delivery | Configurable work fields for content calendars, copy/captions, design briefs/drafts, ad setup/reporting, shoots/footage, video edits, reels/scripts, PR coverage and operational handovers. Contributor, brief, asset reference, schedule, quality, revision and approval history are retained. |
+| Tasks/workload | Team-first assignment; own-team authorized members or another team's designated leader only; backend-enforced integer difficulty 1–5; project membership validation; effort records, comments, dependency cycle checks, status/quality/revision context and notifications. |
+| Financial intelligence | Approved contract fees, won deal value, receipts, explicit project costs, employee-effort cost estimates where privacy allows, vendor costs and client advertising spend are separate. Shared-contract/mixed-service allocations are not invented. Profit/margin are unavailable when required allocation/cost evidence is missing. |
+| HR | Existing shared employee records, private documents, recruitment/CV parsing/interviews/hiring, onboarding, attendance, configurable geofencing, leave counting and approval chains, yearly balances, deterministic payroll drafts/approval/snapshots and offboarding retained. |
+| Performance | Role-specific frameworks, configurable seniority multipliers, assigned-team-leader-only employee KPI creation/editing, bidirectional threshold warnings (20% default), explicit confirmation/justification and audit. Project effort, quality, difficulty, revisions and blockers can be inspected as evidence, not an automatic final score. |
+| Reports/discussions | Profession-specific monthly questions, employees' submitted reports, leader feedback/return for correction, revised submissions retaining audit history, readable server PDFs, append-only threaded two-way discussions with authors/timestamps/notifications. |
+| Learning | Expanded HR-managed course library, provider/category/skills/description/duration/cost/difficulty/target roles/requirements, archiving, plan assignment, leader-only plan edits, employee read-only progress, assessments and descriptive training impact. Completion does not automatically grant a skill. |
+| Feedback/engagement | Anonymous/identified feedback, private browser bookmarks for follow-up with no employee-facing ticket numbers, HR-controlled owner case sharing, no anonymous identity link, handler responses and history. Satisfaction receipts have a database-enforced employee/calendar-month uniqueness rule across surveys. Owner cannot participate. |
+| Owner lifecycle | Business-focused navigation and dashboard; all company contracts; no personal attendance/leave/payroll/resignation workflows; documented termination proposal → HR/legal assessment → explicit owner approval → HR checklist/settlement/access closure. No automatic legal outcome is assumed. |
+| Intelligence | Actual CRM/project/HR evidence, company/sales/project/client/department summaries, target achievement, source effectiveness, losses, cycle duration, forecast snapshots/accuracy, backlog/capacity context and a real-model open-ended advisor. |
+| Administration | Organization/teams/positions/seniority, accounts and roles, team supervision grants, structured settings (no ordinary raw JSON settings screen), KPI/course configuration and filtered audit log. |
 
-Default **Demo AI** uses deterministic specialist evidence builders. It is simulated/rule-based and does not call a model. No API key is needed to demonstrate any core workflow.
+## End-to-end demonstration
 
-For a real provider, copy `.env.example` to `.env` and configure:
+1. HR configures teams, leaders, reporting lines and seniority and provisions sales/project/accounting accounts. Existing fictional employee accounts can be reassigned through the UI; no duplicate employee record is needed.
+2. A sales employee creates a lead, records calls/meetings/follow-ups, and converts it. Existing authorized matching companies/contacts are reused.
+3. Move the deal through the pipeline. A won/lost outcome requires explicit confirmation; loss requires a reason. Convert a won deal into a client and draft contract.
+4. The contracts manager/owner reviews and explicitly approves the contract. Create a project linked to that approved contract and client. Assign a project manager and participating employees.
+5. Assign a task after selecting its target team. Cross-team work must go to the other team's designated leader for redistribution. The assignee must also be a project member for project work.
+6. The contributor submits the department-specific deliverable. A different authorized reviewer requests revisions or approves with a quality assessment. Log effort and complete the task with any external delay context.
+7. Inspect employee **Business contribution evidence**, submit the profession-specific monthly report, discuss it with the leader, and export the readable PDF. These facts inform review rather than determining employment decisions.
+8. Accounting records approved production costs and receipts. Company insights distinguish fees, won value, estimates, actual effort, external expenses and client ad spend. Save a forecast snapshot to compare against subsequent closed value.
+9. Employees may submit anonymous feedback. The browser retains a private follow-up token; no case number is shown in ordinary employee screens. Only specifically shared cases become available to the owner.
+10. Owner may propose a termination, but HR review, applicable legal/contract assessment, explicit approval, offboarding checklist, settlement review and access closure are required before archival.
+
+## Real AI — configuration required
+
+The simulated advisor has been removed. With no key/model, the application shows **AI unavailable**, explains what to configure, and does not fabricate an answer. Missing credentials do not block the other modules.
+
+In `.env`:
 
 ```dotenv
-AI_MODE=live
 AI_API_KEY=your-server-side-key
-AI_MODEL=your-provider-supported-model
-AI_BASE_URL=https://api.openai.com/v1
+AI_MODEL=your-supported-model
+AI_PROVIDER=auto
+AI_BASE_URL=
 ```
 
-Restart the server. Use a model that supports Responses API structured JSON outputs. Other providers must implement that protocol at their configured base URL. Keys remain on the backend and never appear in bootstrap/frontend responses. The integration follows the [official Responses API contract](https://developers.openai.com/api/reference/resources/responses/methods/create).
+Restart the server. Gemini models use Google?s native `generateContent` API with structured JSON output; other models use the [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create). `AI_PROVIDER` may be `auto`, `gemini` or `openai`. Leave `AI_BASE_URL` blank to use the provider?s default endpoint. Gemini model names are detected automatically, including configurations that retained the old OpenAI default URL. Loopback HTTP endpoints are supported for a local compatible model service; remote endpoints must use HTTPS. The old `AI_MODE=demo` setting no longer selects simulated behavior.
 
-The orchestrator routes by intent or explicit specialist selection. Each specialist has distinct authorized evidence and a responsibility contract. One provider call interprets the selected specialist's structured evidence; this is not a distributed autonomous agent cluster. The response schema is validated on receipt. Requests time out after 20 seconds; invalid/unavailable responses produce a clearly disclosed demo fallback. Identical questions with unchanged authorized context are cached for five minutes per user.
+The advisor handles arbitrary questions. General knowledge and authorized company evidence are distinguished in the instructions. It receives freshly scoped CRM/project/HR data, never unrestricted SQL access. Peer-salary requests are rejected before provider retrieval for unauthorized users. Raw anonymous case narratives/identities and individual survey responses are not sent to the model. The model has no mutation tools.
 
-Payroll and all business mutations are deterministic backend services. AI has no mutation tool. It cannot hire/reject, promote, change salaries, punish, terminate, or initiate investigations. Candidate comparisons use job-related skills only. Complaints AI receives de-identified category/status aggregates, not raw narratives, identities or exact submission timestamps. Approved knowledge articles are included as policy evidence.
+Conversation history is stored per user/conversation and bound to a current evidence/authorization fingerprint. Changed scope/data invalidates old context rather than retaining stale privileged responses. Timeouts, rate limits, provider rejection and invalid structured output are explicit failures, never simulated fallbacks. Provider secrets are not returned in bootstrap responses or logged.
 
-The chat panel retains conversation messages while signed in; each request is independently scoped against current records. It does not maintain cross-turn model memory. This limits stale authorization and data leakage but means follow-up questions should include enough context.
+**External blocker:** no live AI credentials were available for this handoff. The adapter, successful structured transport, permissions, missing-key and error paths are tested using controlled responses. End-to-end behavior with a real hosted/local model must be verified after configuring a key/model. This is not claimed as a completed live-provider acceptance check.
 
-**Live credentials were not available for handoff testing.** The transport, schema, scope, caching and failure behavior were tested with controlled provider responses. Real network/model behavior must be verified with your configured account. Live mode sends the selected authorized evidence to that provider; use fictional data for this experiment.
+## Architecture and migration
 
-## Architecture
+The application is a modular monolith using Python, SQLite and browser-native JavaScript ES modules. It has no frontend build pipeline or paid-service requirement for core workflows.
 
 ```text
-frontend/                 Buildless UI, forms, responsive design, EN/AR and RTL
-backend/server.py         HTTP/JSON transport, authentication, session/origin checks
-backend/service.py        Authorization scopes and deterministic business services
-backend/catalog.py        Explicit resource/form field allowlists
-backend/workflows.py      Cases, surveys, files, hiring and employee lifecycle
-backend/insights.py        Attendance, workforce, KPI and training analytics
-backend/ai.py              Read-only orchestrator, specialist evidence, provider adapter
-backend/db.py              SQLite connections, migrations, password hashing and seed
-backend/migrations/        Four ordered SQL migrations
-tests/                    Database/HTTP tests and Playwright browser workflows
-scripts/                  Test runner and source packaging
-docs/                     Architecture, security/limits and verification notes
-data/                     Runtime database/uploads (ignored; created automatically)
+backend/server.py             Authenticated HTTP transport and static allowlist
+backend/service.py            Existing HR services, payroll and leave workflows
+backend/business_catalog.py   CRM/project schemas and form contracts
+backend/business.py           Commercial scopes, conversions, analytics, audit
+backend/platform_api.py       New business and people API routes
+backend/people_policy.py      KPI, assignment, discussion and lifecycle rules
+backend/reporting.py          Branded PDF generation and Arabic shaping
+backend/ai.py                 Real provider, scoped retrieval, safe conversations
+backend/platform_setup.py     Idempotent editable reference configuration
+backend/migrations/           Versions 1–9; additive transformation migrations 5–9
+frontend/app.js               Role shell, navigation and dashboards
+frontend/ui.js                Shared controls, form rendering and API helpers
+frontend/business-ui.js       CRM pipeline, relationships, quotes and insights
+frontend/people-ui.js         HR, performance, discussions, feedback and admin
+frontend/translations.js      English/Arabic interface dictionary
+frontend/styles.css           New responsive design system
+tests/                        Database, HTTP and browser scenarios
 ```
 
-The backend uses parameterized SQLite queries, foreign keys, WAL mode and transaction boundaries. Payroll approval and leave decisions run in write transactions so repeated/concurrent requests cannot silently double-apply a balance update. Private reads enforce employee/team/department scope at the service layer. The owner sees company aggregates and their own private records; explicitly assigned leave approvals grant access to those requests. Ordinary employees cannot query peer salaries, documents, reports or payslips.
+Migrations 5–9 add commercial/organization records, people governance, department delivery and explicit case sharing. Legacy IDs and records are retained. Before each transformation migration the initializer saves a SQLite backup into `data/backups/`. A separate pre-transformation backup of the working database was also taken. `python scripts/verify_migration.py` reproduces a v4 upgrade and asserts legacy values/IDs and foreign keys are retained.
 
-Some closely related concepts intentionally share tables: KPI rows are measurable objectives, payroll rows are the persisted payslip snapshot, course records form the training program library, report `kind` distinguishes monthly self reports from leader evaluations, and checklists represent onboarding/offboarding tasks. This keeps the graduation application maintainable without duplicating employee records.
+The codebase audit and stage plan are in [TRANSFORMATION_PLAN.md](docs/TRANSFORMATION_PLAN.md). See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for permission/data boundaries.
 
-The frontend uses browser-native JavaScript rather than a framework/build pipeline. This is a deliberate installation simplification: all visible forms use the real backend, with shared schema-driven forms, specialized domain views, validation, loading/empty/error states and success feedback. There are no frontend API secrets or decorative hardcoded dashboard totals.
+## PDF exports
 
-## Tests
+Server-generated PDFs cover quotations/proposals, monthly employee reports, payslips, individual project/client contracts and company/sales/client/department/performance reports. PDF content is formatted into headings, tables and narrative sections; raw JSON is not printed as a report. Documents include company branding, dates and page numbers. Arabic shaping/bidi and an embedded TrueType font support RTL output.
 
-Database and HTTP integration tests:
+Windows uses installed Tahoma by default; Linux looks for DejaVu Sans. Set `PDF_FONT_PATH` to an existing Arabic-capable `.ttf` if neither is available. No proprietary font file is bundled.
+
+## Verification
 
 ```powershell
+python -m compileall -q backend
 python -m unittest discover -s tests -v
-```
-
-Optional browser QA requires Node.js 20+ and installed Chrome (or Edge):
-
-```powershell
+python scripts/verify_migration.py
 npm install
 npm run check
 npm run test:e2e
 ```
 
-For Edge:
+Browser QA uses Chrome by default. For Edge, set `$env:HR_BROWSER_CHANNEL = 'msedge'`. The runner uses a new isolated database and two-team organization fixture on port 8011 and terminates only its own server. Browser results/screenshots are written to `test-results/`. It never seeds commercial test records into your normal database.
 
-```powershell
-$env:HR_BROWSER_CHANNEL = 'msedge'
-npm run test:e2e
-```
-
-The browser runner owns a temporary server on port 8011 and uses a new isolated SQLite database each run. It terminates only its own subprocess. Browser screenshots and machine-readable results go into `test-results/`. Tests do not use your default demo database, though upload tests create disposable fictional files in the project's private uploads directory.
-
-`npm run check` checks JavaScript syntax; Python compilation is `python -m compileall -q backend`. There is no TypeScript, transpilation or frontend bundling step. See [verification notes](docs/VERIFICATION.md) for executed results and verification boundaries.
-
-## Privacy and practical limitations
-
-Read [security and limitations](docs/SECURITY_AND_LIMITATIONS.md) before using the application beyond fictional demonstration. Notably: no production deployment hardening, statutory payroll engine, bank integrations, email/SMS, OCR, cryptographic document signing, or enterprise identity. Notifications/reminders are in-app. Survey privacy uses aggregate suppression; anonymous narrative content can still identify a person if they include identifying facts. Data is not encrypted at rest. Anonymous case tokens must be kept private and cannot be recovered.
-
-`--no-demo` initializes an empty schema for development/migration inspection; it does not provision an organization or initial administrator. The immediately runnable supported demonstration path is the default seeded startup.
-
-## Source handoff
-
-Generate a clean source archive (excluding credentials, databases, uploaded files and dependency caches):
+Executed results and boundaries are recorded in [VERIFICATION.md](docs/VERIFICATION.md). Source-only installation can be reproduced after packaging:
 
 ```powershell
 python scripts/package_source.py
+python scripts/verify_package.py
 ```
 
-The resulting `northstar-people-source.zip` contains source, migrations, tests, configuration example and documentation. Extract it, run the commands above, and a fresh demonstration database is created.
+The resulting `northstar-company-os-source.zip` excludes secrets, databases, private files, caches and installed dependencies. Install `requirements.txt` after extraction to enable PDF functions.
+
+## Limits and remaining work
+
+See [SECURITY_AND_LIMITATIONS.md](docs/SECURITY_AND_LIMITATIONS.md) and [ACCEPTANCE.md](docs/ACCEPTANCE.md). This is a working graduation platform, not HubSpot/Salesforce feature parity or a production accounting/legal-compliance product. External email/calendar/bank/ad-platform connectors, OCR, electronic signatures, sophisticated accounting/revenue allocation, enterprise identity and production hosting hardening are not included. AI live-provider acceptance remains blocked by missing credentials. No unsupported Egyptian legal notice period or termination outcome is hardcoded; HR must document the applicable assessment.
+
+Advisor conversation history is stored in the server SQLite database and restored for the authenticated account when opening the advisor. Messages retain recommendations and PDF download links. Signing out clears the browser state; another account cannot request that history by supplying a user ID. History from a different role or permission scope is withheld. Back up the database to retain conversations.

@@ -1,3 +1,5 @@
-# Core application uses the Python 3.11+ standard library only.
-# Optional: extract text from PDF CVs. TXT and DOCX work without installation.
+# Install in .vendor or a virtual environment. Needed for PDF exports and parsing.
 pypdf>=5.0,<7
+reportlab>=4.4,<5
+arabic-reshaper>=3,<4
+python-bidi>=0.6,<1

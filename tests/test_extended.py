@@ -22,19 +22,19 @@ class ExtendedTest(unittest.TestCase):
     def setUp(self):
         self.db=connect(':memory:');source=connect(self.path);source.backup(self.db);source.close()
         users=rows(self.db,'SELECT u.id,u.employee_id,u.email,u.role,e.name,e.department_id FROM users u JOIN employees e ON e.id=u.employee_id')
-        self.hr=next(u for u in users if u['role']=='hr');self.nora=next(u for u in users if u['employee_id']==6);self.owner=next(u for u in users if u['role']=='owner')
+        self.hr=next(u for u in users if u['role']=='hr');self.nora=next(u for u in users if u['employee_id']==6);self.owner=next(u for u in users if u['role']=='owner');self.leader=next(u for u in users if u['employee_id']==4)
     def tearDown(self): self.db.close()
     def test_migrations_role_specific_templates_and_notes(self):
-        self.assertEqual([1,2,3,4],[r['version'] for r in rows(self.db,'SELECT * FROM schema_versions')])
-        self.assertEqual(15,len(rows(self.db,'SELECT * FROM kpi_templates')))
-        apply_templates(self.db,self.hr,{'employee_id':6})
+        self.assertEqual([1,2,3,4,5,6,7,8,9,10],[r['version'] for r in rows(self.db,'SELECT * FROM schema_versions')])
+        self.assertGreaterEqual(len(rows(self.db,'SELECT * FROM kpi_templates')),15)
+        apply_templates(self.db,self.leader,{'employee_id':6})
         self.assertEqual(9,one(self.db,'SELECT COUNT(*) AS n FROM kpis WHERE employee_id=6')['n'])
         performance_note(self.db,self.nora,{'comment':'Please consider the revised target.','request_correction':True})
         notes=performance_insights(self.db,self.nora)['notes'];self.assertEqual(1,len(notes))
         with self.assertRaises(Problem): performance_note(self.db,self.nora,{'employee_id':8,'comment':'Unauthorized'})
     def test_training_attendance_skill_assessments_and_impact(self):
         pid=create_resource(self.db,self.hr,'learning_plans',dict(employee_id=6,course_id=1,objective='Improve measured design skill',due=date.today().isoformat(),pre_score=40))['id']
-        update_resource(self.db,self.nora,'learning_plans',pid,{'progress':100,'post_score':85,'baseline_kpi':60,'followup_kpi':90,'application':'Applied to the new interface'})
+        update_resource(self.db,self.leader,'learning_plans',pid,{'progress':100,'post_score':85,'baseline_kpi':60,'followup_kpi':90,'application':'Applied to the new interface'})
         training(self.db,self.nora,'POST',dict(plan_id=pid,day=date.today().isoformat(),attended=True,notes='Completed workshop'))
         result=next(p for p in training(self.db,self.nora,'GET',{}) if p['plan_id']==pid)
         self.assertEqual(45,result['assessment_change']);self.assertEqual(30,result['kpi_change']);self.assertEqual(1,len(result['attendance']))
@@ -55,7 +55,7 @@ class ExtendedTest(unittest.TestCase):
         self.assertEqual(6,len(result['periods']));self.assertEqual(0,result['periods'][-1]['turnover_percent'])
         with self.assertRaises(Problem): workforce(self.db,self.nora)
     def test_team_tasks_and_scope(self):
-        result=assign_team(self.db,self.hr,dict(team_id=2,title='Team-wide fictional task',due=date.today().isoformat(),priority='High',complexity=3,estimated_hours=2))
+        result=assign_team(self.db,self.leader,dict(team_id=2,title='Team-wide fictional task',due=date.today().isoformat(),priority='High',complexity=3,estimated_hours=2))
         self.assertIn('5',result['message'])
         with self.assertRaises(Problem): assign_team(self.db,self.nora,dict(team_id=2))
     def test_day_leave_cannot_understate_units(self):
@@ -116,8 +116,9 @@ class ExtendedTest(unittest.TestCase):
         self.assertEqual(5,one(self.db,'SELECT COUNT(*) AS n FROM checklists WHERE employee_id=?',(eid,))['n'])
         with self.assertRaises(Problem): hire_candidate(self.db,self.hr,1,{})
     def test_survey_ai_uses_aggregates_without_case_access(self):
-        result=ask(self.db,self.owner,{'message':'Explain employee survey engagement themes'})
-        self.assertEqual('complaints',result['agent'])
-        self.assertIn('aggregate sentiment',result['answer'])
+        from backend.ai import scoped_evidence
+        result=scoped_evidence(self.db,self.owner,'Explain engagement themes','complaints')
+        self.assertIn('complaints_aggregate',result)
+        self.assertNotIn('secret_hash',json.dumps(result))
 
 if __name__=='__main__':unittest.main(verbosity=2)

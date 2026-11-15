@@ -85,14 +85,18 @@ def performance_note(db,u,p):
     return {'message':'Comment recorded. Your reviewer can see it.'}
 
 def apply_templates(db,u,p):
-    require(u['role'] in ('hr','leader','manager'))
+    from .people_policy import assigned_leader
+    require(assigned_leader(db,u,p.get('employee_id',0)),'Only the assigned team leader can apply employee KPI frameworks.')
     eid=int(p.get('employee_id',0));check_employee(db,u,eid)
     emp=one(db,'SELECT * FROM employees WHERE id=?',(eid,))
     templates=rows(db,'SELECT * FROM kpi_templates WHERE position_id=?',(emp['position_id'],))
     require(bool(templates),'No templates exist for this job position.',400)
     period=int(p['period_id']) if p.get('period_id') else None
+    seniority=one(db,'SELECT target_factor FROM seniorities WHERE id=?',(emp['seniority_id'],))
+    factor=seniority['target_factor'] if seniority else 1
     for template in templates:
-        insert(db,'kpis',dict(employee_id=eid,period_id=period,title=template['title'],target=template['target'],actual=0,weight=template['weight'],direction=template['direction'],status='Proposed'))
+        if template['seniority_id'] and template['seniority_id']!=emp['seniority_id']:continue
+        insert(db,'kpis',dict(employee_id=eid,period_id=period,title=template['title'],target=template['target']*(factor if not template['seniority_id'] else 1),actual=0,weight=template['weight'],direction=template['direction'],status='Proposed'))
     return {'message':f'{len(templates)} role-specific objectives created for review.'}
 
 def training(db,u,method,p):

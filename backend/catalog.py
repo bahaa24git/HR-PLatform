@@ -27,3 +27,14 @@ CATALOG = {
  'articles': dict(label='Knowledge base',icon='book',public=True,manage=['hr','owner'],fields=[f('title','Article title'),f('category','Category'),f('content','Article content','textarea'),f('status','Publication','select',True,['Draft','Published','Archived'])]),
 }
 CATALOG['announcements']['fields'].insert(4,f('team_id','Team (optional)','team',False))
+CATALOG['kpis']['manage']=['leader','sales_leader']
+CATALOG['kpis']['create_self']=False
+CATALOG['learning_plans']['manage']=['hr','leader','sales_leader']
+CATALOG['employees']['fields'] += [dict(**f('seniority_id','Seniority','number',False),reference='seniorities'),f('certifications','Certifications','textarea',False)]
+CATALOG['tasks']['fields'].sort(key=lambda x:0 if x['name']=='team_id' else 1)
+CATALOG['tasks']['fields'][0]['required']=True
+CATALOG['tasks']['fields'].insert(0,dict(**f('project_id','Project','project',False),reference='projects'))
+CATALOG['tasks']['manage'] += ['project_manager','sales_leader','sales_manager','admin']
+CATALOG['courses']['fields'] += [f('provider','Provider','text',False),f('category','Category','text',False),f('description','Description','textarea',False),f('difficulty','Difficulty (1–5)','number'),f('target_roles','Target roles','text',False),f('completion_requirements','Completion requirements','textarea',False),f('status','Status','select',True,['Active','Archived'])]
+for resource in CATALOG.values():
+    if 'hr' in resource.get('manage',[]):resource['manage'].append('admin')

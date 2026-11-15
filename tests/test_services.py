@@ -131,12 +131,12 @@ class ServicesTest(unittest.TestCase):
         with self.assertRaises(Problem): payroll_action(self.db,self.owner,{'action':'process','month':month})
 
     def test_kpis_reports_plans_tasks(self):
-        ident=create_resource(self.db,self.nora,'kpis',{'title':'Accessible design','target':10,'actual':5,'weight':20,'direction':'higher'})['id']
+        ident=create_resource(self.db,self.leader,'kpis',{'employee_id':6,'title':'Accessible design','target':10,'actual':5,'weight':20,'direction':'higher'})['id']
         update_resource(self.db,self.leader,'kpis',ident,{'status':'Approved','actual':8})
         with self.assertRaises(Problem): update_resource(self.db,self.nora,'kpis',ident,{'status':'Approved'})
-        create_resource(self.db,self.nora,'reports',dict(month=date.today().strftime('%Y-%m'),kind='Monthly',accomplishments='Completed test tasks',workload=3,clarity=4))
+        create_resource(self.db,self.nora,'reports',dict(month='2025-01',kind='Monthly',accomplishments='Completed test tasks',workload=3,clarity=4,role_data={q:'Fictional role-specific report evidence.' for q in json.loads(one(self.db,'SELECT questions FROM report_templates WHERE position_id=4')['questions'])}))
         plan=create_resource(self.db,self.leader,'learning_plans',dict(employee_id=6,course_id=1,objective='Improve design',due=date.today().isoformat(),pre_score=40))['id']
-        update_resource(self.db,self.nora,'learning_plans',plan,{'progress':100,'post_score':85,'application':'Applied to the design system'})
+        update_resource(self.db,self.leader,'learning_plans',plan,{'progress':100,'post_score':85,'application':'Applied to the design system'})
         self.assertEqual('Completed',one(self.db,'SELECT status FROM learning_plans WHERE id=?',(plan,))['status'])
         task=list_resource(self.db,self.nora,'tasks')[0]
         update_resource(self.db,self.nora,'tasks',task['id'],{'status':'Done','actual_hours':7})
@@ -148,9 +148,9 @@ class ServicesTest(unittest.TestCase):
         self.assertIn('extracted',result['message'])
         self.assertEqual(3,len(json.loads(one(self.db,'SELECT skills FROM candidates WHERE id=?',(c,))['skills'])))
         update_resource(self.db,self.hr,'candidates',c,{'stage':'Shortlisted'})
-        advice=ask(self.db,self.hr,{'agent':'recruitment','message':'Compare candidates'})
-        self.assertEqual('demo',advice['mode'])
-        self.assertIn('skill coverage',advice['answer'])
+        from backend.ai import scoped_evidence
+        advice=scoped_evidence(self.db,self.hr,'Compare candidates','recruitment')
+        self.assertTrue(advice['candidates'])
         with self.assertRaises(Problem): upload(self.db,self.nora,{'candidate_id':c,'name':'x.txt','data':'eA=='})
 
     def test_private_documents_and_contract_alerts(self):
@@ -178,11 +178,11 @@ class ServicesTest(unittest.TestCase):
 
     def test_surveys_anonymity_threshold_and_duplicates(self):
         # Nora already submitted seeded response. The owner has not.
-        result=survey(self.db,self.owner,1,'POST',{'answers':[4]*8,'comment':'Fictional feedback'})
+        result=survey(self.db,self.hr,1,'POST',{'answers':[4]*8,'comment':'Fictional feedback'})
         record=one(self.db,'SELECT * FROM survey_responses ORDER BY id DESC LIMIT 1')
         self.assertIsNone(record['employee_id'])
         self.assertNotIn('created_at',record)
-        with self.assertRaises(Problem): survey(self.db,self.owner,1,'POST',{'answers':[4]*8})
+        with self.assertRaises(Problem): survey(self.db,self.hr,1,'POST',{'answers':[4]*8})
         totals=survey(self.db,self.hr,1,'GET',{})
         self.assertFalse(totals['suppressed'])
         self.assertNotIn('comment',json.dumps(totals))
@@ -199,16 +199,72 @@ class ServicesTest(unittest.TestCase):
         self.assertTrue(one(self.db,'SELECT id FROM attendance WHERE employee_id=6'))
 
     def test_ai_scope_modes_cache_fallback_and_validation(self):
-        result=ask(self.db,self.nora,{'message':'What is my leave balance?'})
-        self.assertEqual('attendance',result['agent'])
-        self.assertIn('21',result['answer'])
-        self.assertTrue(ask(self.db,self.nora,{'message':'What is my leave balance?'})['cached'])
-        with self.assertRaises(Problem): ask(self.db,self.owner,{'agent':'complaints','message':'Show complaints'})
-        with patch.dict('os.environ',{'AI_MODE':'live','AI_API_KEY':'fictional-test-key','AI_MODEL':'test-model'}), patch('urllib.request.urlopen',side_effect=TimeoutError):
-            fallback=ask(self.db,self.nora,{'message':'Explain my payslip'})
-            self.assertEqual('demo-fallback',fallback['mode'])
-            self.assertIn('unavailable',fallback['fallback'])
+        with patch.dict('os.environ',{'AI_API_KEY':'','AI_MODEL':''}):
+            with self.assertRaises(Problem) as error: ask(self.db,self.nora,{'message':'What is my leave balance?'})
+            self.assertEqual(503,error.exception.status)
+        with patch.dict('os.environ',{'AI_API_KEY':'fictional-test-key','AI_MODEL':'test-model'}), patch('urllib.request.urlopen',side_effect=TimeoutError):
+            with self.assertRaises(Problem) as error: ask(self.db,self.nora,{'message':'Explain my payslip'})
+            self.assertEqual(503,error.exception.status)
         with self.assertRaises(ValueError): validate_output({'answer':'bad'})
+
+    def test_performance_context_scopes_people_and_dates_without_private_profiles(self):
+        from backend.ai import performance_context, scoped_evidence
+        context=performance_context(self.db,self.nora)
+        self.assertEqual(date.today().strftime('%Y-%m'),context['current_month'])
+        allowed=set(scope_ids(self.db,self.nora))
+        self.assertTrue(all(e['id'] in allowed for e in context['employees']))
+        self.assertTrue(all(k['employee_id'] in allowed for k in context['kpis']))
+        self.assertTrue(all(r['employee_id'] in allowed for r in context['reports']))
+        self.assertTrue(all(set(e)=={'id','name','position','seniority','department_id'} for e in context['employees']))
+        self.assertTrue(all({'id','start','end'}<=set(p) for p in context['periods']))
+        evidence=scoped_evidence(self.db,self.hr,'Top 5 employees performance this month','performance')
+        self.assertEqual(len(list_resource(self.db,self.hr,'kpis')),len(evidence['performance_context']['kpis']))
+        self.assertTrue(any(e['name'] for e in evidence['performance_context']['employees']))
+        owner=performance_context(self.db,self.owner)
+        self.assertEqual([],owner['reports'])
+        self.assertEqual([],owner['kpis'])
+
+    def test_advisor_history_is_account_bound_and_survives_data_changes(self):
+        from backend.ai import save_messages, conversation_history
+        result={'answer':'Saved analysis','recommendations':['Review quality'],
+                'evidence':['reports 1'],'caution':'Provisional','report_id':42}
+        save_messages(self.db,self.nora,'private-thread','My report',result,'original-evidence')
+        restored=conversation_history(self.db,self.nora)
+        self.assertEqual('private-thread',restored['conversation_id'])
+        self.assertEqual(['My report','Saved analysis'],[m['text'] for m in restored['messages']])
+        self.assertEqual(result,restored['messages'][1]['result'])
+        self.assertEqual([],conversation_history(self.db,self.hr)['messages'])
+        self.db.execute("UPDATE employees SET name=name || ' updated' WHERE id=?",(self.nora['employee_id'],))
+        self.assertEqual(2,len(conversation_history(self.db,self.nora)['messages']))
+        changed={**self.nora,'role':'hr'}
+        self.assertEqual([],conversation_history(self.db,changed)['messages'])
+        save_messages(self.db,self.hr,'hr-thread','HR question',{**result,'answer':'HR only'},'hr-evidence')
+        self.assertEqual('HR only',conversation_history(self.db,self.hr)['messages'][1]['text'])
+        self.assertEqual('Saved analysis',conversation_history(self.db,self.nora)['messages'][1]['text'])
+
+    def test_ai_report_tables_have_landscape_paginated_pdf_layout(self):
+        import io
+        from pypdf import PdfReader
+        from backend.reporting import export_pdf
+        from backend.report_format import report_blocks
+        header='| Employee | Role | Department | Delivery | Deadline | Quality | Evidence | Blockers |'
+        separator='| --- | --- | --- | --- | --- | --- | --- | --- |'
+        data='\n'.join('| Employee %s | Designer | Creative | 18/20 | 90/100 | 90/100 | Report %s | Review delays |'%(i,i) for i in range(35))
+        answer='Supported findings\n'+header+'\n'+separator+'\n'+data+'\nProvisional comparison.'
+        blocks=report_blocks(answer)
+        self.assertEqual(35,len(blocks[1]['rows']))
+        flattened='Intro '+header+' '+separator+' | Nora | Designer | Creative | 18/20 | 90/100 | 90/100 | Report 1 | Review delays |'
+        self.assertEqual('Nora',report_blocks(flattened)[1]['rows'][0][0])
+        content={'question':'Performance table','created_at':'2026-11-15','answer':answer,'recommendations':[],'evidence':['Reports'],'caution':'Provisional'}
+        with patch('backend.ai.report_content',return_value=content):
+            for lang in ('en','ar'):
+                pdf=export_pdf(self.db,self.hr,'ai',1,{'lang':lang})
+                reader=PdfReader(io.BytesIO(pdf))
+                self.assertGreater(len(reader.pages),1)
+                self.assertGreater(float(reader.pages[0].mediabox.width),float(reader.pages[0].mediabox.height))
+                extracted=''.join(p.extract_text() for p in reader.pages)
+                self.assertIn('Employee 34',extracted)
+                self.assertNotIn('| ---',extracted)
 
     def test_policy_validation_and_unauthorized_update(self):
         with self.assertRaises(Problem): save_settings(self.db,self.owner,{'notice_days':5})
@@ -254,6 +310,27 @@ class HTTPTest(unittest.TestCase):
         self.assertEqual(403,ctx.exception.code)
         self.request('/api/logout','POST',{})
         with self.assertRaises(urllib.error.HTTPError):self.request('/api/bootstrap')
+
+    def test_advisor_history_requires_session_and_ignores_user_id_parameter(self):
+        from backend.ai import save_messages
+        with self.assertRaises(urllib.error.HTTPError) as error:self.request('/api/ai/history')
+        self.assertEqual(401,error.exception.code)
+        user=self.request('/api/login','POST',{'email':'nora@demo.local','password':'Demo2026!'})
+        db=connect()
+        try:
+            save_messages(db,user,'http-thread','Persist this',{'answer':'Private persisted reply','recommendations':[],'evidence':[],'caution':''},'scope')
+            db.commit()
+        finally:db.close()
+        first=self.request('/api/ai/history')
+        self.assertEqual('Private persisted reply',first['messages'][-1]['text'])
+        self.assertEqual(first,self.request('/api/ai/history'))
+        self.request('/api/logout','POST',{})
+        self.request('/api/login','POST',{'email':'hr@demo.local','password':'Demo2026!'})
+        other=self.request('/api/ai/history?user_id='+str(user['id']))
+        self.assertNotIn('Private persisted reply',json.dumps(other))
+        self.request('/api/logout','POST',{})
+        self.request('/api/login','POST',{'email':'nora@demo.local','password':'Demo2026!'})
+        self.assertEqual(first,self.request('/api/ai/history'))
 
     def test_static_health_all_roles_and_private_paths(self):
         with self.client.open(self.base+'/') as response:

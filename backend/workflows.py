@@ -9,16 +9,17 @@ from .db import rows, one, insert, ROOT, password_hash
 from .service import Problem, require, permission, scope_ids, check_employee, settings, notify, validate, list_resource
 
 def cases(db,u,method,p):
-    handler=permission(db,u,'case_handle')
+    handler=permission(db,u,'case_handle') or u['role'] in ('owner','admin')
     if method=='GET':
         if handler:
-            data=rows(db,'SELECT * FROM complaints ORDER BY id DESC')
+            data=rows(db,'SELECT * FROM complaints WHERE id IN (SELECT complaint_id FROM case_access WHERE user_id=?) ORDER BY id DESC',(u['id'],)) if u['role']=='owner' else rows(db,'SELECT * FROM complaints ORDER BY id DESC')
         else:
             data=rows(db,'SELECT * FROM complaints WHERE employee_id=? AND anonymous=0',(u['employee_id'],))
         result=[{k:v for k,v in r.items() if k!='secret_hash'} for r in data]
         if handler:
             for record in result:
                 record['history']=rows(db,'SELECT message,author,created_day FROM case_history WHERE complaint_id=?',(record['id'],))
+                record['owner_visible']=bool(one(db,'SELECT user_id FROM case_access WHERE complaint_id=? LIMIT 1',(record['id'],)))
         return result
     action=p.get('action','submit')
     if action=='submit':
@@ -45,9 +46,16 @@ def cases(db,u,method,p):
     require(handler)
     r=one(db,'SELECT * FROM complaints WHERE id=?',(int(p.get('id',0)),))
     require(r is not None,'Case not found.',404)
+    if u['role']=='owner':require(one(db,'SELECT user_id FROM case_access WHERE user_id=? AND complaint_id=?',(u['id'],r['id'])),'This case has not been shared with your owner account.')
+    if 'owner_visible' in p:
+        require(u['role'] in ('hr','admin'),'Only authorized HR handlers may share confidential cases.')
+        db.execute('DELETE FROM case_access WHERE complaint_id=?',(r['id'],))
+        if p['owner_visible']:
+            for owner_user in rows(db,"SELECT id FROM users WHERE role='owner'"):insert(db,'case_access',dict(user_id=owner_user['id'],complaint_id=r['id'],granted_by=u['id']))
     status=p.get('status',r['status'])
     require(status in ('Open','In review','Awaiting information','Resolved','Closed'),'Invalid case status.',400)
-    owner=int(p.get('owner_id') or u['id'])
+    fallback=one(db,"SELECT id FROM users WHERE role='hr' ORDER BY id LIMIT 1")
+    owner=int(p.get('owner_id') or r['owner_id'] or (u['id'] if u['role']=='hr' else fallback['id'] if fallback else 0))
     require(one(db,"SELECT id FROM users WHERE id=? AND role='hr'",(owner,)),'Case owners must have case-handler permission.',400)
     resolution=str(p.get('resolution',''))[:10000]
     due=str(p.get('due',r['due']));date.fromisoformat(due)
@@ -62,12 +70,16 @@ def survey(db,u,ident,method,p):
     require(r is not None,'Survey not found.',404)
     questions=json.loads(r['questions'])
     if method=='POST':
+        require(u['role']!='owner','The owner cannot submit employee satisfaction surveys.')
         require(r['status']=='Published' and r['start']<=date.today().isoformat()<=r['end'],'This survey is not currently accepting responses.',409)
         require(not one(db,'SELECT 1 FROM survey_receipts WHERE survey_id=? AND user_id=?',(ident,u['id'])),'You have already responded.',409)
+        month=date.today().strftime('%Y-%m')
+        require(not one(db,'SELECT 1 FROM monthly_survey_receipts WHERE user_id=? AND month=?',(u['id'],month)),'You have already submitted your satisfaction response for this calendar month.',409)
         answers=p.get('answers',[])
         require(isinstance(answers,list) and len(answers)==len(questions) and all(type(a) in (int,float) and 1<=a<=5 for a in answers),'Answer every question on the 1–5 scale.',400)
         insert(db,'survey_responses',dict(survey_id=ident,department_id=u['department_id'],employee_id=None if r['anonymous'] else u['employee_id'],answers=json.dumps(answers),comment=str(p.get('comment',''))[:3000]))
         insert(db,'survey_receipts',dict(survey_id=ident,user_id=u['id']))
+        insert(db,'monthly_survey_receipts',dict(user_id=u['id'],month=month,survey_id=ident))
         return {'message':'Thank you. Your response has been recorded.'}
     require(u['role'] in ('hr','owner','manager'))
     all_responses=rows(db,'SELECT * FROM survey_responses WHERE survey_id=?',(ident,))
@@ -91,7 +103,7 @@ def survey(db,u,ident,method,p):
 def resignation_action(db,u,ident,p):
     r=one(db,'SELECT * FROM resignations WHERE id=?',(ident,))
     require(r is not None,'Resignation not found.',404)
-    require(u['role']=='hr')
+    require(u['role'] in ('hr','admin'))
     action=p.get('action')
     if action=='acknowledge':
         require(r['status']=='Submitted','Already acknowledged.',409)
@@ -118,9 +130,9 @@ def upload(db,u,p):
     require(bool(eid)!=bool(cid),'Choose one employee or candidate.',400)
     if eid:
         check_employee(db,u,eid)
-        require(u['role']=='hr' or eid==u['employee_id'])
+        require(u['role'] in ('hr','admin') or eid==u['employee_id'])
     else:
-        require(u['role']=='hr')
+        require(u['role'] in ('hr','admin'))
         require(one(db,'SELECT id FROM candidates WHERE id=?',(cid,)),'Candidate not found.',404)
     name=Path(str(p.get('name','document'))).name
     suffix=Path(name).suffix.lower()
@@ -184,6 +196,7 @@ def save_settings(db,u,p):
     require(merged['approval_role'] in ('leader','manager','hr'),'Invalid approval role.',400)
     require(isinstance(merged['approval_chain'],list) and 1<=len(merged['approval_chain'])<=5 and all(v in ('leader','manager','hr','owner') for v in merged['approval_chain']),'Approval chain must contain 1–5 leader, manager, hr or owner stages.',400)
     require(merged['leave_count_mode'] in ('calendar','workdays'),'Leave count mode must be calendar or workdays.',400)
+    require(isinstance(merged['kpi_change_threshold'],(int,float)) and 1<=merged['kpi_change_threshold']<=100,'KPI warning threshold must be between 1 and 100 percent.',400)
     require(isinstance(merged['workdays'],list) and all(type(x) is int and 0<=x<=6 for x in merged['workdays']),'Invalid workdays.',400)
     g=merged['geofence']
     require(isinstance(g,dict) and set(g)=={'enabled','apply_remote','latitude','longitude','radius_m'},'Invalid geofence.',400)
@@ -192,11 +205,11 @@ def save_settings(db,u,p):
     return {'message':'Policies saved.'}
 
 def provision(db,u,p):
-    require(u['role']=='hr')
+    require(u['role'] in ('hr','admin'))
     eid=int(p.get('employee_id',0))
     require(one(db,'SELECT id FROM employees WHERE id=?',(eid,)),'Employee not found.',404)
     role=p.get('role','employee')
-    require(role in ('owner','hr','manager','leader','employee'),'Invalid role.',400)
+    require(one(db,'SELECT id FROM roles WHERE id=?',(role,)) is not None,'Invalid role.',400)
     password=str(p.get('password',''))
     require(len(password)>=10,'Use at least 10 characters.',400)
     emp=one(db,'SELECT email FROM employees WHERE id=?',(eid,))
@@ -205,7 +218,7 @@ def provision(db,u,p):
     return {'message':'User account created.'}
 
 def hire_candidate(db,u,ident,p):
-    require(u['role']=='hr')
+    require(u['role'] in ('hr','admin'))
     candidate=one(db,'SELECT * FROM candidates WHERE id=?',(ident,))
     require(candidate is not None,'Candidate not found.',404)
     require(not candidate['employee_id'],'Candidate already has an employee record.',409)
