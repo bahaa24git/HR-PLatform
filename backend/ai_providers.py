@@ -2,9 +2,23 @@
 import json
 import os
 import re
+import time
+import urllib.error
 import urllib.request
 from urllib.parse import quote, urlsplit
 from .service import Problem, require
+
+
+def request_json(request, attempts=3):
+    """Retry temporary upstream failures; never retry credentials or bad schemas."""
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request,timeout=90) as response:
+                return json.loads(response.read(2_000_000))
+        except urllib.error.HTTPError as error:
+            if error.code not in (429,502,503,504) or attempt==attempts-1:raise
+            error.close()
+            time.sleep(1+attempt)
 
 
 def provider_name():
@@ -24,7 +38,13 @@ def build_request(payload):
         model=payload['model'].strip().removeprefix('models/')
         require(bool(re.fullmatch(r'[A-Za-z0-9._-]+',model)),'Invalid Gemini model identifier.',503)
         endpoint=base+'/models/'+quote(model,safe='-._')+':generateContent'
-        body={'systemInstruction':{'parts':[{'text':payload['instructions']}]},'contents':[{'role':'user','parts':[{'text':payload['input']}]}],'generationConfig':{'responseMimeType':'application/json','responseJsonSchema':payload['text']['format']['schema'],'maxOutputTokens':payload['max_output_tokens']}}
+        # Gemini expands nested length bounds into grammar states. Enforce bounds
+        # in our server validator while retaining types, required fields and enums.
+        def serving_schema(value):
+            if isinstance(value,dict):return {key:serving_schema(item) for key,item in value.items() if key not in ('maxItems','maxLength','minItems','minLength')}
+            if isinstance(value,list):return [serving_schema(item) for item in value]
+            return value
+        body={'systemInstruction':{'parts':[{'text':payload['instructions']}]},'contents':[{'role':'user','parts':[{'text':payload['input']}]}],'generationConfig':{'responseMimeType':'application/json','responseJsonSchema':serving_schema(payload['text']['format']['schema']),'maxOutputTokens':payload['max_output_tokens']}}
         headers={'Content-Type':'application/json','x-goog-api-key':key}
     else:
         endpoint=(base or 'https://api.openai.com/v1')+'/responses'

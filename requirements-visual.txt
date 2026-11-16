@@ -1,0 +1,3 @@
+# Optional development-only PDF rasterization and image regression checks.
+-r requirements.txt
+PyMuPDF==2.1

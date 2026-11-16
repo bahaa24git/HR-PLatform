@@ -6,11 +6,19 @@ from datetime import datetime
 from pathlib import Path
 from xml.sax.saxutils import escape
 from .db import rows, one
-from .report_format import report_blocks
 from .service import require, Problem, list_resource, settings, scope_ids
 from .business import BUSINESS, record, records, analytics, audit
 
 def export_pdf(db,u,kind,ident,query):
+    if kind=='ai':
+        from .ai import report_content
+        from .report_pdf import render_pdf
+        require(ident is not None,'Choose an AI report.',400)
+        data=report_content(db,u,ident)
+        try:pdf=render_pdf(data,ident,settings(db)['company_name'],query)
+        except ImportError:raise Problem('PDF export libraries are missing. Install requirements.txt into .vendor and restart.',503)
+        audit(db,u,kind,ident,'PDF exported')
+        return pdf
     try:
         from reportlab.lib import colors
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -30,9 +38,7 @@ def export_pdf(db,u,kind,ident,query):
         value=str(value if value is not None else '—')
         if any('\u0600'<=c<='\u06ff' for c in value):value=get_display(arabic_reshaper.reshape(value))
         return escape(value).replace('\n','<br/>')
-    from .ai import report_content
-    blocks=report_blocks(report_content(db,u,ident)['answer']) if kind=='ai' and ident else []
-    page_size=landscape(A4) if any(b['type']=='table' and len(b['headers'])>5 for b in blocks) else A4
+    page_size=A4
     currency=settings(db)['currency']
     amount=lambda cents:f'{float(cents or 0)/100:,.2f} {currency}'
     styles=getSampleStyleSheet()
@@ -44,12 +50,7 @@ def export_pdf(db,u,kind,ident,query):
     story=[]
     title=kind.replace('_',' ').title()
     data=None
-    if kind=='ai':
-        from .ai import report_content
-        require(ident is not None,'Choose an AI report.',400)
-        data=report_content(db,u,ident)
-        title='تقرير التحليل الذكي' if rtl else 'AI Analysis Report'
-    elif kind in BUSINESS:
+    if kind in BUSINESS:
         data=record(db,u,kind,ident) if ident else None
     elif kind in ('reports','payroll','contracts','kpis'):
         data=next((r for r in list_resource(db,u,kind) if r['id']==ident),None) if ident else None
@@ -64,18 +65,7 @@ def export_pdf(db,u,kind,ident,query):
         if rtl:cells=[list(reversed(row)) for row in cells]
         t=Table(cells,repeatRows=1,hAlign='RIGHT' if rtl else 'LEFT',colWidths=[(page_size[0]-84)/len(headers)]*len(headers))
         t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#eaf0f6')),('TEXTCOLOR',(0,0),(-1,0),colors.HexColor('#243d52')),('LINEBELOW',(0,0),(-1,-1),.4,colors.HexColor('#dde4eb')),('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),9),('BOTTOMPADDING',(0,0),(-1,-1),9)]));story.extend([t,Spacer(1,16)])
-    if data and kind=='ai':
-        section('الطلب' if rtl else 'Report request',data['question'])
-        section('تاريخ التحليل' if rtl else 'Analysis generated',data['created_at'])
-        story.append(Paragraph(text('التحليل' if rtl else 'Analysis'),styles['Heading2']))
-        for block in blocks:
-            if block['type']=='table':table(block['headers'],block['rows'])
-            else:story.extend([para(block['text']),Spacer(1,8)])
-        if data['recommendations']:section('التوصيات' if rtl else 'Recommendations','\n'.join('• '+v for v in data['recommendations']))
-        if data['evidence']:section('الأدلة والمصادر' if rtl else 'Evidence & sources','\n'.join('• '+v for v in data['evidence']))
-        section('القيود' if rtl else 'Limitations',data['caution'])
-        section('ملاحظة' if rtl else 'Disclosure','تحليل مولد بالذكاء الاصطناعي باستخدام السجلات المصرح بها. يتطلب مراجعة بشرية.' if rtl else 'AI-generated analysis based on authorized records. Human review required.')
-    elif data and kind=='quotations':
+    if data and kind=='quotations':
         deal=record(db,u,'deals',data['deal_id']);client=record(db,u,'accounts',deal['account_id'])
         section('العميل' if rtl else 'Prepared for',client['name'])
         section('المقترح' if rtl else 'Proposal',data['title'])

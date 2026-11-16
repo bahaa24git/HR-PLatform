@@ -25,4 +25,18 @@ from backend.ai import save_messages
 for email,label in [('nora@demo.local','Nora'),('hr@demo.local','HR')]:
     user=one(db,'SELECT u.*,e.department_id FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.email=?',(email,))
     save_messages(db,user,'saved-'+label,label+' private question',{'answer':label+' saved advisor response','recommendations':[label+' saved recommendation'],'evidence':['Fictional browser fixture'],'caution':'Test only'},'fixture-evidence')
+# Saved structured report for preview/PDF browser tests; no external model call.
+import json
+import os
+from unittest.mock import patch
+from report_fixtures import example_report
+from backend.ai import ask
+fixture={'answer':'Synthetic top-five employee report.','recommendations':['Review fixture evidence.'],'evidence':['Synthetic QA fixture'],'caution':'Demonstration only.','report':example_report()}
+class ReportResponse:
+    def __enter__(self):return self
+    def __exit__(self,*args):pass
+    def read(self,*args):return json.dumps({'output':[{'content':[{'type':'output_text','text':json.dumps(fixture)}]}]}).encode()
+hr=one(db,"SELECT u.*,e.name,e.department_id,e.team_id FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.email='hr@demo.local'")
+with patch.dict(os.environ,{'AI_API_KEY':'fixture-only','AI_MODEL':'fixture-only','AI_PROVIDER':'openai'}),patch('urllib.request.urlopen',return_value=ReportResponse()):
+    ask(db,hr,{'message':'Create a synthetic top-five performance report in a table'})
 db.commit();db.close()

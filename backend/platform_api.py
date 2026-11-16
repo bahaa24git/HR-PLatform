@@ -182,6 +182,9 @@ def route(db,u,method,path,p,raw_path):
             if current in seen:continue
             seen.add(current);frontier.extend(r['depends_on_id'] for r in links if r['task_id']==current)
         insert(db,'task_dependencies',dict(task_id=ident,depends_on_id=other));return {'message':'Dependency recorded.'},None
+    if len(parts)==3 and parts[:2]==['ai','reports'] and method=='GET':
+        from .ai import report_content
+        return report_content(db,u,int(parts[2])),None
     if len(parts)>=2 and parts[0]=='exports' and method=='GET':
         from .reporting import export_pdf
         data=export_pdf(db,u,parts[1],int(parts[2]) if len(parts)>2 else None,query)

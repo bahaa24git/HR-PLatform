@@ -8,5 +8,6 @@ node_modules/
 .pip-cache/
 .vendor/
 test-results/
+/artifacts/
 /northstar-people-source.zip
 /northstar-company-os-source.zip
