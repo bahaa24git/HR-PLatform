@@ -53,9 +53,9 @@ def attachment(db,u,method,entity,ident,p):
     content=base64.b64decode(p.get('data',''),validate=True);require(0<len(content)<=5*1024*1024,'File must be at most 5 MB.',400)
     if suffix=='pdf':require(content.startswith(b'%PDF'),'Invalid PDF file.',400)
     key=secrets.token_hex(24)+'.'+suffix;directory=ROOT/'data/business-uploads';directory.mkdir(parents=True,exist_ok=True);(directory/key).write_bytes(content)
-    ident=insert(db,'business_attachments',dict(entity=entity,record_id=ident,name=name,storage_key=key,mime='application/octet-stream',uploaded_by=u['id']))
+    attachment_id=insert(db,'business_attachments',dict(entity=entity,record_id=ident,name=name,storage_key=key,mime='application/octet-stream',uploaded_by=u['id']))
     b.audit(db,u,entity,ident,'Attachment uploaded',after={'name':name})
-    return {'message':'Attachment stored privately.','id':ident}
+    return {'message':'Attachment stored privately.','id':attachment_id}
 
 def route(db,u,method,path,p,raw_path):
     parts=path.strip('/').split('/')[1:]

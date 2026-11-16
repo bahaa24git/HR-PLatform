@@ -189,4 +189,37 @@ class CompanyTest(unittest.TestCase):
         tracked,_=route(self.db,self.nora,'POST','/api/feedback',{'action':'track','tracking_token':result['tracking_token']},'/api/feedback')
         self.assertNotIn('case_ref',tracked);self.assertNotIn('employee_id',tracked)
 
+    def test_campaign_validation_statuses_and_scope(self):
+        pid,_=self.project()
+        payload=dict(project_id=pid,name='QA multi-channel campaign',channel='Social',objective='Qualified inquiries',start='2026-11-01',end='2026-12-31',advertising_budget_cents=200000,advertising_spend_cents=50000,impressions=10000,clicks=500,conversions=20,attributed_revenue_cents=100000,status='Planning')
+        cid=b.create(self.db,self.pm,'campaigns',payload)['id']
+        for status in ('Active','Paused','Completed','Planning'):
+            b.update(self.db,self.pm,'campaigns',cid,{'status':status})
+            self.assertEqual(status,b.record(self.db,self.nora,'campaigns',cid)['status'])
+        for invalid in ({'end':'2026-10-01'},{'advertising_spend_cents':-1},{'advertising_budget_cents':1.5},{'impressions':float('nan')},{'status':'Unknown'},{'project_id':999999}):
+            with self.subTest(invalid=invalid),self.assertRaises(Problem):b.update(self.db,self.pm,'campaigns',cid,invalid)
+        with self.assertRaises(Problem):b.update(self.db,self.nora,'campaigns',cid,{'status':'Paused'})
+        with self.assertRaises(Problem):b.record(self.db,self.s2,'campaigns',cid)
+        timeline=b.timeline(self.db,self.owner,'projects',pid)
+        self.assertEqual(cid,timeline['related']['campaigns'][0]['id'])
+        self.assertIn('QA multi-channel campaign',b.export_csv(self.db,self.owner,'campaigns').decode('utf-8-sig'))
+
+    def test_project_template_milestones_risks_and_validation(self):
+        account,_,contract=self.won_contract()
+        template=b.create(self.db,self.owner,'project_templates',{'name':'QA delivery workflow','workflow':['Kickoff','Delivery']})['id']
+        payload=dict(name='QA template project',account_id=account,contract_id=contract,manager_id=self.pm['employee_id'],template_id=template,start='2026-11-01',deadline='2026-12-31',budget_cents=100000,estimated_hours=20,status='Planning',priority='High')
+        pid=b.create(self.db,self.owner,'projects',payload)['id']
+        self.assertEqual(2,len(b.timeline(self.db,self.owner,'projects',pid)['related']['milestones']))
+        for status in ('Active','On hold','Completed','Archived'):
+            b.update(self.db,self.pm,'projects',pid,{'status':status})
+        for invalid in ({'deadline':'2026-10-01'},{'budget_cents':-1},{'estimated_hours':float('inf')},{'manager_id':999999}):
+            with self.subTest(invalid=invalid),self.assertRaises(Problem):b.update(self.db,self.owner,'projects',pid,invalid)
+        mid=b.create(self.db,self.pm,'milestones',dict(project_id=pid,title='QA review',due='2026-12-01',status='Planned'))['id']
+        for status in ('In progress','Blocked','Completed'):b.update(self.db,self.pm,'milestones',mid,{'status':status})
+        rid=b.create(self.db,self.pm,'project_risks',dict(project_id=pid,title='QA dependency',severity='High',mitigation='Review schedule',owner_id=self.pm['employee_id'],status='Open'))['id']
+        for status in ('Mitigated','Closed'):b.update(self.db,self.pm,'project_risks',rid,{'status':status})
+        self.assertEqual('Closed',b.record(self.db,self.pm,'project_risks',rid)['status'])
+        b.update(self.db,self.owner,'projects',pid,{'notes':'Reviewed delivery plan'})
+        self.assertTrue(one(self.db,"SELECT id FROM notifications WHERE employee_id=? AND title='Project updated'",(self.pm['employee_id'],)))
+
 if __name__=='__main__':unittest.main(verbosity=2)

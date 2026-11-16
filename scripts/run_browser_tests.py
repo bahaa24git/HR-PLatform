@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent.parent
-env=dict(os.environ,HR_DATABASE=str(ROOT/'data'/f'e2e-{time.time_ns()}.sqlite3'),HR_E2E_EXTERNAL='1')
+env=dict(os.environ,HR_DATABASE=str(ROOT/'data'/f'e2e-{time.time_ns()}.sqlite3'),HR_E2E_EXTERNAL='1',AI_API_KEY='',AI_MODEL='')
 subprocess.run([sys.executable,str(ROOT/'tests/browser_seed.py')],cwd=ROOT,env=env,check=True)
 server=subprocess.Popen([sys.executable,'-m','backend.server','--port','8011'],cwd=ROOT,env=env,stdout=subprocess.DEVNULL)
 try:
