@@ -1,5 +1,28 @@
 const {test,expect}=require('@playwright/test');
 
+test('monthly reports, payslips, KPIs, contracts and learning reports share the same preview and export style',async({page})=>{
+ await page.goto('/');await page.locator('#login-form button[type="submit"]').click();
+ for(const kind of ['reports','payroll','kpis','contracts','learning_plans']){
+  await page.locator('.sidebar .nav-button[data-page="'+kind+'"]').click();
+  await page.locator('[data-action="h-view"]').first().click();
+  await expect(page.locator('.modal .report-document')).toBeVisible();
+  await expect(page.locator('.modal .report-document-footer')).toContainText('System report');
+  await expect(page.locator('.modal .report-document')).not.toContainText('AI-generated');
+  if(kind==='reports'){
+   await expect(page.getByRole('button',{name:'Review discussion',exact:true})).toBeVisible();
+   await expect(page.getByRole('button',{name:'Business contribution evidence',exact:true})).toBeVisible();
+   await page.screenshot({path:'test-results/monthly-report-style.png',fullPage:true});
+  }
+  const href=await page.locator('.modal a[href^="/api/exports/"]').getAttribute('href');
+  const pdf=await page.request.get(href);expect(pdf.ok()).toBeTruthy();expect((await pdf.body()).subarray(0,5).toString()).toBe('%PDF-');
+  await page.locator('.modal [data-action="report-preview"]').click();
+  await expect(page.locator('#system-report-preview .report-document')).toBeVisible();
+  await page.locator('#system-report-orientation').selectOption('landscape');
+  await expect(page.locator('#system-report-download')).toHaveAttribute('href',/orientation=landscape/);
+  await page.locator('.modal-actions [data-action="close"]').click();
+ }
+});
+
 test('structured reports render native tables, secure previews, charts and downloadable PDFs',async({page})=>{
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.goto('/');await page.locator('#login-form button[type="submit"]').click();

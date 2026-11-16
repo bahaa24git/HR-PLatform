@@ -185,6 +185,9 @@ def route(db,u,method,path,p,raw_path):
     if len(parts)==3 and parts[:2]==['ai','reports'] and method=='GET':
         from .ai import report_content
         return report_content(db,u,int(parts[2])),None
+    if len(parts) in (2,3) and parts[0]=='report-previews' and method=='GET':
+        from .system_reports import document_content
+        return document_content(db,u,parts[1],int(parts[2]) if len(parts)==3 else None,query),None
     if len(parts)>=2 and parts[0]=='exports' and method=='GET':
         from .reporting import export_pdf
         data=export_pdf(db,u,parts[1],int(parts[2]) if len(parts)>2 else None,query)

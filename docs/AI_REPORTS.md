@@ -15,7 +15,15 @@ ReportLab remains the PDF engine: it is already installed, supports embedded Ara
 3. Existing `ai_interactions.response` and `ai_messages.result_json` store the document. No database migration is needed. The cache version changed so earlier unstructured answers do not satisfy new requests.
 4. `frontend/report-format.js` renders escaped text, actual `<table>` elements, KPI cards, lists, and SVG charts. Model HTML never executes.
 5. `GET /api/ai/reports/:id` returns the authorized report preview. `frontend/people-ui.js` opens it with template, orientation, layout language, and chart controls.
-6. The existing `GET /api/exports/ai/:id` delegates to `backend/report_pdf.py` after the same ownership and current-evidence checks. Other export types retain their existing renderer.
+6. All `GET /api/exports/:kind/:id` routes delegate to `backend/report_pdf.py`. AI reports retain ownership/current-evidence checks; application reports use the existing record and module scope checks.
+
+## Shared style for application reports
+
+`backend/system_reports.py` converts monthly reports, payslips, KPI scorecards, employment contracts, learning plans, quotations, client contracts, project/campaign/deliverable records, and company/sales/client/department/performance summaries into the same document components. No AI request is needed to display or export these records. `backend/reporting.py` is now a single composer/renderer entry point for all PDF exports.
+
+`GET /api/report-previews/:kind/:id` uses the same authorization and composition as the corresponding PDF download. The UI displays the shared report component directly for monthly reports, payroll, KPIs, contracts, learning plans, quotations, projects, client contracts, campaigns and deliverables. Existing related records, attachments, review discussions and action buttons remain available. PDF controls across the app include a matching preview with orientation and language controls.
+
+Monthly reports retain their role-specific answers, narrative fields, period, status, submission date, workload/clarity ratings and review discussion. Workload and clarity are contextual ratings, not employee performance scores. Payslips retain their component calculations; quotations retain pricing, discount, review state and totals. References resolve only within authorized record scopes. System reports use a recorded-data disclosure rather than an AI-generation label.
 
 The six report types are employee performance, workforce/HR analytics, team-leader monthly assessment, department performance, projects/operations, and executive analysis. Templates select a report family; the model supplies only sections supported by the evidence. Instructions explicitly separate individual performance, team satisfaction, ethical workplace environment, and professional workplace environment.
 

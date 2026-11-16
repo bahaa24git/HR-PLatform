@@ -57,6 +57,26 @@ The configurable organization includes Sales Atlas and Sales Horizon, seniority 
 
 The normal application does not manufacture six new sales employees or commercial transactions. The isolated browser test fixture creates two leaders, three differently senior employees per sales team, a contracts manager, a project manager and an accountant for reproducible QA.
 
+### Additional sales, project and accounting test accounts
+
+These accounts are created by `tests/browser_seed.py` in the **isolated browser-test database**, not in the normal website database. Each uses password **`Demo2026!`**.
+
+| Role | Team / scope | Account |
+| --- | --- | --- |
+| Sales Contracts Manager | Sales Atlas and Sales Horizon | `sales.manager@demo.local` |
+| Sales Team Leader | Sales Atlas | `leader.atlas@demo.local` |
+| Sales Team Leader | Sales Horizon | `leader.horizon@demo.local` |
+| Sales Employee — seniority level 1 | Sales Atlas | `sales.atlas.1@demo.local` |
+| Sales Employee — seniority level 2 | Sales Atlas | `sales.atlas.2@demo.local` |
+| Sales Employee — seniority level 3 | Sales Atlas | `sales.atlas.3@demo.local` |
+| Sales Employee — seniority level 1 | Sales Horizon | `sales.horizon.1@demo.local` |
+| Sales Employee — seniority level 2 | Sales Horizon | `sales.horizon.2@demo.local` |
+| Sales Employee — seniority level 3 | Sales Horizon | `sales.horizon.3@demo.local` |
+| Project Manager | Creative Studio team; assigned projects | `project.manager@demo.local` |
+| Accountant | Accounting | `accounting@demo.local` |
+
+`python scripts/run_browser_tests.py` creates these accounts automatically in a separate test database. To use equivalent accounts on the normal website at port 8000, provision them through HR's **Users & roles** workflow described above. Executive Management and Administrator roles are supported but have no automatically seeded demo logins.
+
 ## Working product areas
 
 | Area | Implemented workflows |
@@ -173,3 +193,5 @@ The resulting `northstar-company-os-source.zip` excludes secrets, databases, pri
 See [SECURITY_AND_LIMITATIONS.md](docs/SECURITY_AND_LIMITATIONS.md) and [ACCEPTANCE.md](docs/ACCEPTANCE.md). This is a working graduation platform, not HubSpot/Salesforce feature parity or a production accounting/legal-compliance product. External email/calendar/bank/ad-platform connectors, OCR, electronic signatures, sophisticated accounting/revenue allocation, enterprise identity and production hosting hardening are not included. AI live-provider acceptance remains blocked by missing credentials. No unsupported Egyptian legal notice period or termination outcome is hardcoded; HR must document the applicable assessment.
 
 Advisor conversation history is stored in the server SQLite database and restored for the authenticated account when opening the advisor. Messages retain recommendations and PDF download links. Signing out clears the browser state; another account cannot request that history by supplying a user ID. History from a different role or permission scope is withheld. Back up the database to retain conversations.
+
+To populate complete fictional risks, milestones and deliverables for existing `Example` projects (Brand launch, Seasonal content and Product showcase), run `python scripts/add_project_examples.py`. This optional command backs up the local database, links contributors and tasks, includes a reviewed deliverable, and skips existing examples when repeated. It requires those three fictional projects and the demo contributors Nora Khalil and Youssef Amin. Databases and backups remain local and are excluded from Git.

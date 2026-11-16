@@ -222,7 +222,8 @@ def render_pdf(content, ident, company, options=None):
         if values:
             story.append(paragraph(title,11,blue,heading=True))
             for value in values:story.append(paragraph('• '+value,9))
-    story.append(paragraph(tr('AI-generated analysis. Human review required.','تحليل مولد بالذكاء الاصطناعي. يتطلب مراجعة بشرية.'),8,muted))
+    disclosure=tr('System report · Based on recorded data.','تقرير النظام · مستند إلى البيانات المسجلة.') if report.get('origin')=='system' else tr('AI-generated analysis. Human review required.','تحليل مولد بالذكاء الاصطناعي. يتطلب مراجعة بشرية.')
+    story.append(paragraph(disclosure,8,muted))
     buffer=io.BytesIO()
     doc=SimpleDocTemplate(buffer,pagesize=page_size,rightMargin=42,leftMargin=42,topMargin=44,bottomMargin=48,title=report['title'],author=company)
     def footer(canvas,document):
