@@ -167,6 +167,10 @@ class CompanyTest(unittest.TestCase):
     def test_project_task_deliverable_review_and_performance_evidence(self):
         pid,contract=self.project()
         task=create_resource(self.db,self.leader,'tasks',dict(project_id=pid,team_id=2,employee_id=6,title='Design launch assets',due=date.today().isoformat(),priority='High',complexity=4,estimated_hours=6))['id']
+        self.db.execute("INSERT INTO tasks(employee_id,team_id,title,due,priority,complexity,estimated_hours,status,project_id) VALUES(7,2,'Colleague project task',?, 'Medium',3,2,'To do',?)",(date.today().isoformat(),pid))
+        visible=list_resource(self.db,self.nora,'tasks')
+        self.assertIn(task,[r['id'] for r in visible]);self.assertNotIn(self.db.execute('SELECT last_insert_rowid()').fetchone()[0],[r['id'] for r in visible])
+        self.assertEqual('Fictional brand launch',next(r for r in visible if r['id']==task)['project_name'])
         deliverable=b.create(self.db,self.nora,'deliverables',dict(project_id=pid,task_id=task,employee_id=6,title='Launch design draft',kind='Design draft',brief='Accessible brand visuals',content_data={'Design rationale':'Clear hierarchy','Brief compliance':'Approved brand colors','Revision notes':'Initial draft'}))['id']
         b.review_deliverable(self.db,self.pm,deliverable,dict(decision='Revision Required',comment='Clarify small-screen type hierarchy.',quality_score=75))
         b.review_deliverable(self.db,self.pm,deliverable,dict(decision='Approved',comment='Reviewed against the brief.',quality_score=92))
@@ -193,6 +197,8 @@ class CompanyTest(unittest.TestCase):
         pid,_=self.project()
         payload=dict(project_id=pid,name='QA multi-channel campaign',channel='Social',objective='Qualified inquiries',start='2026-11-01',end='2026-12-31',advertising_budget_cents=200000,advertising_spend_cents=50000,impressions=10000,clicks=500,conversions=20,attributed_revenue_cents=100000,status='Planning')
         cid=b.create(self.db,self.pm,'campaigns',payload)['id']
+        with self.assertRaises(Problem):b.records(self.db,self.nora,'campaigns')
+        self.db.execute("UPDATE project_members SET capabilities='[\"campaigns\"]' WHERE project_id=? AND employee_id=?",(pid,self.nora['employee_id']))
         for status in ('Active','Paused','Completed','Planning'):
             b.update(self.db,self.pm,'campaigns',cid,{'status':status})
             self.assertEqual(status,b.record(self.db,self.nora,'campaigns',cid)['status'])

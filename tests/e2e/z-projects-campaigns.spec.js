@@ -31,7 +31,7 @@ test('projects and campaigns support creation, every status, related actions, fi
  await row(page,project.name).getByRole('button',{name:'View',exact:true}).click();
  const pdf=await page.locator('.modal a[href^="/api/exports/projects/"]').getAttribute('href');
  const response=await page.request.get(pdf);expect(response.ok()).toBeTruthy();expect((await response.body()).subarray(0,4).toString()).toBe('%PDF');
- await page.getByRole('button',{name:'Assign member',exact:true}).click();await fill(page,'employee_id',boot.lookups.employees.find(e=>e.name==='Nora Khalil').id);await fill(page,'responsibility','QA design');await submit(page);
+ await page.getByRole('button',{name:'Assign member',exact:true}).click();await fill(page,'employee_id',boot.lookups.employees.find(e=>e.name==='Nora Khalil').id);await fill(page,'responsibility','QA design');await fill(page,'capabilities','campaigns');await submit(page);
  for(const [action,data] of [
   ['Add milestone',{title:'QA kickoff',due:'2026-12-01',status:'In progress'}],
   ['Add risk',{title:'QA schedule risk',severity:'High',mitigation:'Confirm dependencies early',owner_id:boot.user.employee_id,status:'Open'}]

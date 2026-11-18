@@ -1,17 +1,17 @@
 """Business schemas are shared by API validation and the structured UI."""
 from .catalog import f
 
-SALES=['sales','sales_leader','sales_manager','owner','admin']
-MANAGERS=['project_manager','manager','leader','sales_leader','sales_manager','owner','admin']
-FINANCE=['accountant','owner','admin']
-ADMIN=['hr','admin']
+SALES=['sales','sales_leader','sales_manager','owner']
+MANAGERS=['project_manager','manager','leader','sales_leader','sales_manager','owner']
+FINANCE=['accountant','owner']
+ADMIN=['hr']
 def ref(name,label,table,required=True):
     return {**f(name,label,'number',required),'reference':table}
 def spec(label,fields,manage,category='Business',**extra):
     return dict(label=label,fields=fields,manage=manage,category=category,**extra)
 
 BUSINESS={
- 'lead_statuses':spec('Lead statuses',[f('name','Status name'),f('position','Order','number')],['sales_manager','owner','admin'],'Administration'),
+ 'lead_statuses':spec('Lead statuses',[f('name','Status name'),f('position','Order','number')],['sales_manager','owner'],'Administration'),
  'delivery_workflows':spec('Department workflows',[f('name','Workflow name'),f('fields','Required work fields (comma separated)','list')],MANAGERS,'Administration'),
  'client_feedback':spec('Client feedback',[ref('account_id','Client','accounts'),ref('project_id','Project','projects',False),f('title','Feedback title'),f('detail','Client feedback','textarea'),f('rating','Rating (1–5)','number')],SALES+['project_manager']),
  'departments':spec('Departments',[f('name','Department')],ADMIN,'Administration'),
@@ -26,7 +26,7 @@ BUSINESS={
  'quotations':spec('Quotations & proposals',[f('title','Title'),ref('deal_id','Deal','deals'),f('kind','Type','select',True,['Quotation','Proposal']),f('expires','Expires','date'),f('discount_percent','Discount (%)','number'),f('notes','Proposal narrative','textarea',False)],SALES),
  'client_contracts':spec('Client contracts',[f('name','Contract title'),ref('account_id','Client','accounts'),ref('deal_id','Deal','deals',False),ref('quotation_id','Quotation','quotations',False),ref('owner_id','Contract owner','employees'),f('value_cents','Contract value (minor units)','number'),f('currency','Currency'),f('start','Start date','date'),f('end','End date','date'),f('renewal','Renewal date','date',False),f('payment_terms','Payment terms','textarea'),f('services','Included services','list'),f('status','Status','select',True,['Draft','Pending approval','Approved','Rejected','Expired','Archived']),f('notes','Notes','textarea',False)],SALES),
  'projects':spec('Projects',[f('name','Project name'),ref('account_id','Client','accounts'),ref('contract_id','Approved contract','client_contracts'),ref('manager_id','Project manager','employees'),ref('template_id','Project template','project_templates',False),f('start','Start date','date'),f('deadline','Deadline','date'),f('budget_cents','Budget (minor units)','number'),f('estimated_hours','Estimated hours','number'),f('status','Status','select',True,['Planning','Active','On hold','Completed','Archived']),f('priority','Priority','select',True,['Low','Medium','High','Urgent']),f('notes','Project notes','textarea',False),f('results','Recorded results','textarea',False)],MANAGERS),
- 'project_members':spec('Project members',[ref('project_id','Project','projects'),ref('employee_id','Employee','employees'),f('responsibility','Responsibility','text',False)],MANAGERS),
+ 'project_members':spec('Project members',[ref('project_id','Project','projects'),ref('employee_id','Employee','employees'),f('responsibility','Responsibility','text',False),f('capabilities','Explicit cross-department access (e.g. campaigns)','list',False)],MANAGERS),
  'milestones':spec('Milestones',[ref('project_id','Project','projects'),f('title','Milestone'),f('due','Due date','date'),f('status','Status','select',True,['Planned','In progress','Completed','Blocked'])],MANAGERS),
  'project_risks':spec('Project risks',[ref('project_id','Project','projects'),f('title','Risk'),f('severity','Severity','select',True,['Low','Medium','High']),f('mitigation','Mitigation','textarea'),ref('owner_id','Owner','employees'),f('status','Status','select',True,['Open','Mitigated','Closed'])],MANAGERS),
  'campaigns':spec('Campaigns',[ref('project_id','Project','projects'),f('name','Campaign name'),f('channel','Channel'),f('objective','Objective','textarea'),f('start','Start date','date'),f('end','End date','date'),f('advertising_budget_cents','Client ad budget (minor units)','number'),f('advertising_spend_cents','Ad spend (minor units)','number'),f('impressions','Impressions','number'),f('clicks','Clicks','number'),f('conversions','Conversions','number'),f('attributed_revenue_cents','Client-attributed revenue (minor units)','number'),f('status','Status','select',True,['Planning','Active','Paused','Completed'])],MANAGERS),
@@ -34,10 +34,10 @@ BUSINESS={
  'time_records':spec('Time records',[ref('task_id','Task','tasks'),ref('employee_id','Employee','employees'),f('day','Date','date'),f('hours','Hours','number'),f('notes','Work notes','textarea',False)],MANAGERS+['employee','sales','hr','accountant']),
  'project_costs':spec('Project costs',[ref('project_id','Project','projects'),f('title','Expense'),f('kind','Cost category','select',True,['Internal','External production','Advertising spend']),f('amount_cents','Amount (minor units)','number'),f('day','Date','date'),f('reason','Reason','textarea')],FINANCE),
  'payments':spec('Receipts',[ref('contract_id','Client contract','client_contracts'),f('amount_cents','Amount received (minor units)','number'),f('day','Date','date'),f('reference','Payment reference'),f('notes','Notes','textarea',False)],FINANCE),
- 'sales_targets':spec('Sales targets',[f('title','Target name'),ref('employee_id','Employee','employees',False),ref('team_id','Team','teams',False),f('month','Month','month'),f('target_cents','Revenue target (minor units)','number')],['sales_leader','sales_manager','owner','admin']),
+ 'sales_targets':spec('Sales targets',[f('title','Target name'),ref('employee_id','Employee','employees',False),ref('team_id','Team','teams',False),f('month','Month','month'),f('target_cents','Revenue target (minor units)','number')],['sales_leader','sales_manager','owner']),
  'services':spec('Services',[f('name','Service'),f('description','Description','textarea',False),f('price_cents','Standard fee (minor units)','number'),f('status','Status','select',True,['Active','Archived'])],SALES,'Administration'),
- 'pipeline_stages':spec('Pipeline configuration',[f('name','Stage name'),f('position','Order','number'),f('probability','Default probability (%)','number'),f('outcome','Outcome','select',True,['Open','Won','Lost'])],['sales_manager','owner','admin'],'Administration'),
- 'lead_sources':spec('Lead sources',[f('name','Source')],['sales_manager','owner','admin'],'Administration'),
+ 'pipeline_stages':spec('Pipeline configuration',[f('name','Stage name'),f('position','Order','number'),f('probability','Default probability (%)','number'),f('outcome','Outcome','select',True,['Open','Won','Lost'])],['sales_manager','owner'],'Administration'),
+ 'lead_sources':spec('Lead sources',[f('name','Source')],['sales_manager','owner'],'Administration'),
  'project_templates':spec('Project templates',[f('name','Template name'),f('description','Description','textarea',False),f('workflow','Workflow steps (comma separated)','list')],MANAGERS,'Administration'),
- 'crm_custom_fields':spec('Custom CRM fields',[f('entity','Entity','select',True,['accounts','contacts','leads','deals']),f('name','Field name'),f('kind','Type','select',True,['text','number','date'])],['sales_manager','owner','admin'],'Administration'),
+ 'crm_custom_fields':spec('Custom CRM fields',[f('entity','Entity','select',True,['accounts','contacts','leads','deals']),f('name','Field name'),f('kind','Type','select',True,['text','number','date'])],['sales_manager','owner'],'Administration'),
 }

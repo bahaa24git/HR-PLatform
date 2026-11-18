@@ -113,7 +113,9 @@ def document_content(db,user,kind,ident=None,query=None):
             breakdown=parsed(data.get('breakdown'),{})
             components=breakdown.get('components',[])
             if components:table(tr('Adjustments','التعديلات'),['Component','Amount','Reason'],[[c['name'],c['amount_cents']/100,c.get('reason','')] for c in components],['string','currency','string'],['',currency,''])
-            table(tr('Calculation notes','ملاحظات الحساب'),['Component','Amount'],[[label,(breakdown.get(key) or 0)/100] for label,key in [('Overtime','overtime_cents'),('Attendance adjustment','late_cents'),('Unpaid leave','unpaid_leave_cents')]],['string','currency'],['',currency])
+            table(tr('Calculation notes','ملاحظات الحساب'),['Component','Amount'],[[label,(breakdown.get(key) or 0)/100] for label,key in [('Overtime','overtime_cents'),('Late arrival (not deducted)','late_cents'),('Unpaid leave','unpaid_leave_cents'),('Reviewed unauthorized absences','absence_deduction_cents')]],['string','currency'],['',currency])
+            if breakdown.get('unauthorized_absences'):
+                narrative(tr('Reviewed absences','الغياب الذي تمت مراجعته'),f"{breakdown['unauthorized_absences']} reviewed unauthorized absence(s) × {breakdown.get('absence_deduction_days',4)} working days.")
             narrative(tr('Calculation limitations','قيود الحساب'),tr('Statutory taxes are not configured.','الضرائب القانونية غير مهيأة.'))
         elif kind=='quotations':
             fields_table(data,spec)
@@ -128,7 +130,7 @@ def document_content(db,user,kind,ident=None,query=None):
                 for label,text in parsed(data.get('content_data'),{}).items():narrative(label,text)
             if kind=='kpis':kpis(tr('KPI scorecard','بطاقة مؤشر الأداء'),[('Target',data.get('target'),''),('Actual',data.get('actual'),''),('Weight',data.get('weight'),'%')])
     elif kind in ('performance','departments'):
-        require(user['role'] in ('owner','hr','admin','manager','leader','sales_manager','sales_leader'),'Not authorized.',403)
+        require(user['role'] in ('owner','hr','manager','leader','sales_manager','sales_leader'),'Not authorized.',403)
         title=tr('Department performance' if kind=='departments' else 'Performance report','أداء الأقسام' if kind=='departments' else 'تقرير الأداء')
         indicators=list_resource(db,user,'kpis')
         table(tr('Performance scorecard','مؤشرات الأداء'),['Employee','Objective','Target','Actual','Weight'],[[one(db,'SELECT name FROM employees WHERE id=?',(k['employee_id'],))['name'],k['title'],k['target'],k['actual'],k['weight']] for k in indicators],['string','string','number','number','percentage'])

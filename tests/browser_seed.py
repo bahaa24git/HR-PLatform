@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 from backend.db import initialize,connect,one,insert,password_hash
 
-initialize();db=connect()
+initialize(demo=True);db=connect()
 sales=one(db,"SELECT id FROM departments WHERE name='Sales'")['id']
 teams={name:one(db,'SELECT id FROM teams WHERE name=?',('Sales '+name,))['id'] for name in ('Atlas','Horizon')}
 def person(email,name,role,team=None,department=sales,leader=None):
@@ -21,6 +21,7 @@ for team in ('Atlas','Horizon'):
         db.execute('UPDATE employees SET seniority_id=? WHERE id=?',(level,eid))
 person('project.manager@demo.local','QA Project Manager','project_manager',2,2)
 person('accounting@demo.local','QA Accountant','accountant',None,one(db,"SELECT id FROM departments WHERE name='Accounting'")['id'])
+person('system.admin@demo.local','QA System Administrator','admin',None,one(db,"SELECT id FROM departments WHERE name='Operations'")['id'])
 from backend.ai import save_messages
 for email,label in [('nora@demo.local','Nora'),('hr@demo.local','HR')]:
     user=one(db,'SELECT u.*,e.department_id FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.email=?',(email,))

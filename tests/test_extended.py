@@ -4,11 +4,11 @@ import json
 import tempfile
 import unittest
 import zipfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from backend.db import connect, initialize, rows, one
-from backend.service import create_resource, update_resource, dashboard, simulate_payroll, settings, Problem
+from backend.service import create_resource, update_resource, dashboard, simulate_payroll, settings, Problem, task_deadline_status, list_resource
 from backend.insights import attendance_report, workforce, performance_insights, performance_note, apply_templates, training, assign_team
 from backend.workflows import upload, save_settings
 from backend.ai import ask
@@ -25,7 +25,7 @@ class ExtendedTest(unittest.TestCase):
         self.hr=next(u for u in users if u['role']=='hr');self.nora=next(u for u in users if u['employee_id']==6);self.owner=next(u for u in users if u['role']=='owner');self.leader=next(u for u in users if u['employee_id']==4)
     def tearDown(self): self.db.close()
     def test_migrations_role_specific_templates_and_notes(self):
-        self.assertEqual([1,2,3,4,5,6,7,8,9,10],[r['version'] for r in rows(self.db,'SELECT * FROM schema_versions')])
+        self.assertEqual(list(range(1,12)),[r['version'] for r in rows(self.db,'SELECT * FROM schema_versions')])
         self.assertGreaterEqual(len(rows(self.db,'SELECT * FROM kpi_templates')),15)
         apply_templates(self.db,self.leader,{'employee_id':6})
         self.assertEqual(9,one(self.db,'SELECT COUNT(*) AS n FROM kpis WHERE employee_id=6')['n'])
@@ -58,6 +58,32 @@ class ExtendedTest(unittest.TestCase):
         result=assign_team(self.db,self.leader,dict(team_id=2,title='Team-wide fictional task',due=date.today().isoformat(),priority='High',complexity=3,estimated_hours=2))
         self.assertIn('5',result['message'])
         with self.assertRaises(Problem): assign_team(self.db,self.nora,dict(team_id=2))
+    def test_task_deadline_status_is_separate_and_handles_terminal_states(self):
+        today=date(2026,11,18)
+        self.assertEqual('Overdue',task_deadline_status(self.db,{'status':'In progress','due':'2026-11-17'},today))
+        self.assertEqual('Due today',task_deadline_status(self.db,{'status':'To do','due':'2026-11-18'},today))
+        self.assertEqual('Due soon',task_deadline_status(self.db,{'status':'To do','due':'2026-11-21'},today))
+        self.assertEqual('On track',task_deadline_status(self.db,{'status':'To do','due':'2026-11-22'},today))
+        self.assertEqual('Completed',task_deadline_status(self.db,{'status':'Approved','due':'2026-11-01'},today))
+        self.assertEqual('No deadline',task_deadline_status(self.db,{'status':'To do','due':None},today))
+    def test_timestamp_deadline_boundaries_respect_company_timezone(self):
+        self.db.execute('UPDATE settings SET value=? WHERE key=?',(json.dumps('America/Los_Angeles'),'timezone'))
+        due='2026-11-18T00:30:00+00:00'
+        exact=datetime.fromisoformat('2026-11-17T16:30:00-08:00')
+        task={'status':'In progress','due':due}
+        self.assertEqual('Due today',task_deadline_status(self.db,task,now=exact-timedelta(seconds=1)))
+        self.assertEqual('Due today',task_deadline_status(self.db,task,now=exact))
+        self.assertEqual('Overdue',task_deadline_status(self.db,task,now=exact+timedelta(seconds=1)))
+        task['status']='Completed'
+        self.assertEqual('Completed',task_deadline_status(self.db,task,now=exact+timedelta(seconds=1)))
+    def test_task_list_is_assignee_scoped_and_labels_internal_work(self):
+        self.db.execute("INSERT INTO tasks(employee_id,team_id,title,due,priority,complexity,estimated_hours,status) VALUES(6,3,'Nora private task','2026-11-18','Medium',3,1,'In progress')")
+        own=self.db.execute('SELECT last_insert_rowid()').fetchone()[0]
+        self.db.execute("INSERT INTO tasks(employee_id,team_id,title,due,priority,complexity,estimated_hours,status) VALUES(7,3,'Colleague task','2026-11-18','Medium',3,1,'In progress')")
+        data=list_resource(self.db,self.nora,'tasks')
+        self.assertIn(own,[r['id'] for r in data])
+        self.assertNotIn(own+1,[r['id'] for r in data])
+        self.assertEqual('Internal company task',next(r for r in data if r['id']==own)['task_category'])
     def test_day_leave_cannot_understate_units(self):
         start=date.today()+timedelta(days=50)
         with self.assertRaises(Problem): create_resource(self.db,self.nora,'leave_requests',dict(type_id=1,start=start.isoformat(),end=(start+timedelta(days=4)).isoformat(),units=1,reason='Invalid unit count'))

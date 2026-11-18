@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from datetime import date
 from .db import rows, one, insert
-from .service import Problem, require, list_resource, scope_ids
+from .service import Problem, require, list_resource, scope_ids, company_today
 from .business import allowed_module, records, analytics, project_ids
 from .ai_providers import build_request, response_text, provider_failure, provider_name, request_json
 from .report_schema import REPORT_SCHEMA, validate_report, classify_report, present_report
@@ -32,6 +32,7 @@ def access_hash(db,u):
 
 
 def conversation_history(db,u):
+    require(u['role']!='admin','System administrators do not have employee or business-data access.')
     """Read only the authenticated user's history, under their current permissions."""
     access=access_hash(db,u)
     messages=[]
@@ -56,7 +57,7 @@ def conversation_history(db,u):
 
 def performance_context(db,u):
     """Join authorized performance records to safe identities and explicit periods."""
-    today=date.today()
+    today=company_today(db)
     positions={r['id']:r['title'] for r in rows(db,'SELECT id,title FROM positions')}
     seniorities={r['id']:r['name'] for r in rows(db,'SELECT id,name FROM seniorities')}
     people=[{'id':e['id'],'name':e['name'],'position':positions.get(e['position_id']),
@@ -68,13 +69,14 @@ def performance_context(db,u):
             'interpretation':'KPI period dates determine relevance; an undated KPI is not proof of current-month performance. Proposed objectives are not approved results. Monthly reports are attributed statements, not independently verified facts. Missing records do not mean poor performance. Compare role-specific targets and identify gaps rather than inventing a company-wide score.'}
 
 def scoped_evidence(db,u,question,agent):
+    require(u['role']!='admin','System administrators do not have employee or business-data access.')
     salary=any(w in question.lower() for w in ('salary','salaries','payroll','payslip','راتب','رواتب','مرتب'))
-    if salary and u['role'] not in ('hr','admin'):
+    if salary and u['role']!='hr':
         peer=any(e['id']!=u['employee_id'] and any(part.lower() in question.lower() for part in e['name'].split() if len(part)>2) for e in rows(db,'SELECT id,name FROM employees'))
         require(not peer and not any(w in question.lower() for w in ('another employee','other employee','everyone','كل الموظفين','موظف آخر')),'Individual salary information is restricted. Contact authorized HR staff for assistance.')
     base={'identity':{'role':u['role'],'employee_id':u['employee_id']},'limitations':'Only authorized records below are available. Missing information is not evidence of absence.','approved_policies':[{'id':r['id'],'title':r['title'],'content':r['content'],'updated_at':r['updated_at']} for r in list_resource(db,u,'articles') if r['status']=='Published']}
     for entity in ('accounts','leads','deals','client_contracts','projects','activities','campaigns','deliverables','sales_targets'):
-        if allowed_module(u,entity):base[entity]=records(db,u,entity)[:100]
+        if allowed_module(db,u,entity):base[entity]=records(db,u,entity)[:100]
     base['business_analytics']=analytics(db,u)
     if u['role']!='owner':
         for entity in ('tasks','kpis','reports','learning_plans','employee_skills','leave_requests'):base[entity]=list_resource(db,u,entity)[:100]
@@ -82,11 +84,11 @@ def scoped_evidence(db,u,question,agent):
         if base['own_employee'] and not salary:
             for key in ('salary_cents','phone','email'):base['own_employee'].pop(key,None)
         if salary:base['authorized_payslips']=list_resource(db,u,'payroll')[:50]
-        balance=one(db,'SELECT entitlement,used,year FROM leave_balances WHERE employee_id=? AND year=?',(u['employee_id'],date.today().year))
+        balance=one(db,'SELECT entitlement,used,year FROM leave_balances WHERE employee_id=? AND year=?',(u['employee_id'],company_today(db).year))
         base['leave_balance']=balance
-        base['today_attendance']=one(db,'SELECT day,check_in,check_out,minutes,exception FROM attendance WHERE employee_id=? AND day=?',(u['employee_id'],date.today().isoformat()))
+        base['today_attendance']=one(db,'SELECT day,check_in,check_out,minutes,exception,classification,review_status FROM attendance WHERE employee_id=? AND day=?',(u['employee_id'],company_today(db).isoformat()))
     if agent=='recruitment':
-        if u['role'] in ('hr','admin','manager','leader'):
+        if u['role'] in ('hr','manager','leader'):
             base['jobs']=list_resource(db,u,'jobs')
             base['candidates']=[{k:r[k] for k in ('id','job_id','skills','experience','stage')} for r in list_resource(db,u,'candidates')]
         else:base['recruitment_access']='Private candidate records are not authorized. General role/job-description guidance may use general knowledge; staffing advice must use scoped capacity evidence.'
@@ -95,7 +97,7 @@ def scoped_evidence(db,u,question,agent):
     if agent=='performance':base['performance_context']=performance_context(db,u)
     if agent=='records':base['authorized_contracts']=list_resource(db,u,'contracts')
     if agent=='complaints':
-        if u['role'] in ('hr','admin','owner'):
+        if u['role'] in ('hr','owner'):
             base['complaints_aggregate']=rows(db,'SELECT category,status,COUNT(*) AS count FROM complaints WHERE id IN (SELECT complaint_id FROM case_access WHERE user_id=?) GROUP BY category,status',(u['id'],)) if u['role']=='owner' else rows(db,'SELECT category,status,COUNT(*) AS count FROM complaints GROUP BY category,status')
         if u['role'] in ('hr','owner','manager'):
             from .workflows import survey
@@ -108,6 +110,7 @@ def route_intent(question):
     return next((agent for agent,words in routes if any(word in text for word in words)),'orchestrator')
 
 def ask(db,u,p):
+    require(u['role']!='admin','System administrators do not have employee or business-data access.')
     question=str(p.get('message','')).strip();require(1<=len(question)<=5000,'Enter a question up to 5,000 characters.',400)
     agent=p.get('agent') or route_intent(question)
     if not p.get('agent') and agent=='orchestrator' and classify_report(question)=='employee_performance':agent='performance'

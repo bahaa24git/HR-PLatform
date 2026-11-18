@@ -5,11 +5,13 @@ import re
 import secrets
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .db import rows, one, insert, ROOT, password_hash
-from .service import Problem, require, permission, scope_ids, check_employee, settings, notify, validate, list_resource
+from .service import Problem, require, permission, scope_ids, check_employee, settings, notify, validate, list_resource, company_today
 
 def cases(db,u,method,p):
-    handler=permission(db,u,'case_handle') or u['role'] in ('owner','admin')
+    require(u['role']!='admin','System administrators do not have employee or complaint-record access.')
+    handler=permission(db,u,'case_handle') or u['role']=='owner'
     if method=='GET':
         if handler:
             data=rows(db,'SELECT * FROM complaints WHERE id IN (SELECT complaint_id FROM case_access WHERE user_id=?) ORDER BY id DESC',(u['id'],)) if u['role']=='owner' else rows(db,'SELECT * FROM complaints ORDER BY id DESC')
@@ -30,8 +32,8 @@ def cases(db,u,method,p):
         secret=secrets.token_urlsafe(24)
         text=(title+' '+detail).lower()
         category=next((category for category,words in [('Workload',['workload','overtime','overwork']),('Communication',['communication','feedback','handoff']),('Work environment',['environment','office','equipment']),('Payroll',['salary','payroll','payslip']),('Conduct',['harass','conduct','retaliation'])] if any(w in text for w in words)),'General')
-        ident=insert(db,'complaints',dict(case_ref=ref,secret_hash=hashlib.sha256(secret.encode()).hexdigest(),employee_id=None if anon else u['employee_id'],anonymous=int(anon),kind='Suggestion' if p.get('kind')=='Suggestion' else 'Complaint',title=title,detail=detail,category=category,due=(date.today()+timedelta(days=14)).isoformat()))
-        insert(db,'case_history',dict(complaint_id=ident,message='Case received. A complaint is an allegation, not proof. Retaliation is prohibited.',author='Case system',created_day=date.today().isoformat()))
+        ident=insert(db,'complaints',dict(case_ref=ref,secret_hash=hashlib.sha256(secret.encode()).hexdigest(),employee_id=None if anon else u['employee_id'],anonymous=int(anon),kind='Suggestion' if p.get('kind')=='Suggestion' else 'Complaint',title=title,detail=detail,category=category,due=(company_today(db)+timedelta(days=14)).isoformat()))
+        insert(db,'case_history',dict(complaint_id=ident,message='Case received. A complaint is an allegation, not proof. Retaliation is prohibited.',author='Case system',created_day=company_today(db).isoformat()))
         return {'message':'Keep the case reference and token. The token is shown only once.','case_ref':ref,'token':secret}
     if action in ('track','followup'):
         ref=str(p.get('case_ref',''))
@@ -41,14 +43,14 @@ def cases(db,u,method,p):
         if action=='followup':
             msg=str(p.get('message','')).strip()
             require(1<=len(msg)<=5000,'Enter a follow-up message.',400)
-            insert(db,'case_history',dict(complaint_id=r['id'],message=msg,author='Case submitter',created_day=date.today().isoformat()))
+            insert(db,'case_history',dict(complaint_id=r['id'],message=msg,author='Case submitter',created_day=company_today(db).isoformat()))
         return {'case_ref':ref,'title':r['title'],'status':r['status'],'resolution':r['resolution'],'history':rows(db,'SELECT message,author,created_day FROM case_history WHERE complaint_id=?',(r['id'],))}
     require(handler)
     r=one(db,'SELECT * FROM complaints WHERE id=?',(int(p.get('id',0)),))
     require(r is not None,'Case not found.',404)
     if u['role']=='owner':require(one(db,'SELECT user_id FROM case_access WHERE user_id=? AND complaint_id=?',(u['id'],r['id'])),'This case has not been shared with your owner account.')
     if 'owner_visible' in p:
-        require(u['role'] in ('hr','admin'),'Only authorized HR handlers may share confidential cases.')
+        require(u['role']=='hr','Only authorized HR handlers may share confidential cases.')
         db.execute('DELETE FROM case_access WHERE complaint_id=?',(r['id'],))
         if p['owner_visible']:
             for owner_user in rows(db,"SELECT id FROM users WHERE role='owner'"):insert(db,'case_access',dict(user_id=owner_user['id'],complaint_id=r['id'],granted_by=u['id']))
@@ -62,7 +64,7 @@ def cases(db,u,method,p):
     category=str(p.get('category',r['category']))
     require(category in ('General','Workload','Communication','Work environment','Payroll','Conduct'),'Invalid case category.',400)
     db.execute('UPDATE complaints SET status=?,resolution=?,owner_id=?,due=?,category=? WHERE id=?',(status,resolution,owner,due,category,r['id']))
-    insert(db,'case_history',dict(complaint_id=r['id'],message=str(p.get('message') or ('Status changed to '+status))[:5000],author='Case handler',created_day=date.today().isoformat()))
+    insert(db,'case_history',dict(complaint_id=r['id'],message=str(p.get('message') or ('Status changed to '+status))[:5000],author='Case handler',created_day=company_today(db).isoformat()))
     return {'message':'Case updated.'}
 
 def survey(db,u,ident,method,p):
@@ -71,9 +73,9 @@ def survey(db,u,ident,method,p):
     questions=json.loads(r['questions'])
     if method=='POST':
         require(u['role']!='owner','The owner cannot submit employee satisfaction surveys.')
-        require(r['status']=='Published' and r['start']<=date.today().isoformat()<=r['end'],'This survey is not currently accepting responses.',409)
+        require(r['status']=='Published' and r['start']<=company_today(db).isoformat()<=r['end'],'This survey is not currently accepting responses.',409)
         require(not one(db,'SELECT 1 FROM survey_receipts WHERE survey_id=? AND user_id=?',(ident,u['id'])),'You have already responded.',409)
-        month=date.today().strftime('%Y-%m')
+        month=company_today(db).strftime('%Y-%m')
         require(not one(db,'SELECT 1 FROM monthly_survey_receipts WHERE user_id=? AND month=?',(u['id'],month)),'You have already submitted your satisfaction response for this calendar month.',409)
         answers=p.get('answers',[])
         require(isinstance(answers,list) and len(answers)==len(questions) and all(type(a) in (int,float) and 1<=a<=5 for a in answers),'Answer every question on the 1–5 scale.',400)
@@ -103,7 +105,7 @@ def survey(db,u,ident,method,p):
 def resignation_action(db,u,ident,p):
     r=one(db,'SELECT * FROM resignations WHERE id=?',(ident,))
     require(r is not None,'Resignation not found.',404)
-    require(u['role'] in ('hr','admin'))
+    require(u['role']=='hr')
     action=p.get('action')
     if action=='acknowledge':
         require(r['status']=='Submitted','Already acknowledged.',409)
@@ -117,7 +119,7 @@ def resignation_action(db,u,ident,p):
         pending=one(db,"SELECT COUNT(*) AS n FROM checklists WHERE employee_id=? AND kind='Offboarding' AND done=0",(r['employee_id'],))['n']
         require(not pending,'Complete all offboarding checklist items first.',409)
         require(p.get('exit_interview') and p.get('settlement')=='Reviewed','Record the exit interview and reviewed settlement.',400)
-        db.execute("UPDATE resignations SET status='Completed',exit_interview=?,settlement='Reviewed',completed_day=? WHERE id=?",(str(p['exit_interview'])[:10000],date.today().isoformat(),ident))
+        db.execute("UPDATE resignations SET status='Completed',exit_interview=?,settlement='Reviewed',completed_day=? WHERE id=?",(str(p['exit_interview'])[:10000],company_today(db).isoformat(),ident))
         db.execute("UPDATE employees SET status='Archived' WHERE id=?",(r['employee_id'],))
         db.execute('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE employee_id=?)',(r['employee_id'],))
         insert(db,'employee_history',dict(employee_id=r['employee_id'],kind='Offboarding complete',detail='Employment archived; access closed; history retained.',actor_id=u['id']))
@@ -130,9 +132,9 @@ def upload(db,u,p):
     require(bool(eid)!=bool(cid),'Choose one employee or candidate.',400)
     if eid:
         check_employee(db,u,eid)
-        require(u['role'] in ('hr','admin') or eid==u['employee_id'])
+        require(u['role']=='hr' or eid==u['employee_id'])
     else:
-        require(u['role'] in ('hr','admin'))
+        require(u['role']=='hr')
         require(one(db,'SELECT id FROM candidates WHERE id=?',(cid,)),'Candidate not found.',404)
     name=Path(str(p.get('name','document'))).name
     suffix=Path(name).suffix.lower()
@@ -180,7 +182,7 @@ def documents(db,u):
     return [{k:v for k,v in r.items() if k!='storage_key'} for r in rows(db,'SELECT * FROM documents') if (r['employee_id'] in ids and (u['role']=='hr' or r['employee_id']==u['employee_id'])) or (r['candidate_id'] and u['role']=='hr')]
 
 def save_settings(db,u,p):
-    require(permission(db,u,'settings'))
+    require(u['role']=='hr' and permission(db,u,'settings'))
     s=settings(db)
     require(set(p).issubset(s),'Unknown configuration key.',400)
     merged={**s,**p}
@@ -189,9 +191,14 @@ def save_settings(db,u,p):
     require(0<=merged['start_hour']<merged['end_hour']<=23,'Work hours must be between 0 and 23, end after start.',400)
     require(1<=merged['working_days']<=31 and merged['survey_minimum']>=3,'Use 1–31 working days and an anonymity threshold of at least 3.',400)
     require(type(merged['late_deduction']) is bool,'Late deduction must be true or false.',400)
+    require(merged['late_deduction'] is False,'Late arrivals are recorded but are not a payroll deduction in the approved policy.',400)
     for k in ('company_name','currency','timezone'):
         require(isinstance(merged[k],str) and 1<=len(merged[k])<=100,f'Invalid {k}.',400)
     require(bool(re.fullmatch('[A-Z]{3}',merged['currency'])),'Currency must be a three-letter uppercase ISO code.',400)
+    try:ZoneInfo(merged['timezone'])
+    except (ZoneInfoNotFoundError,ValueError):raise Problem('Use a valid IANA timezone.',400)
+    require(merged['start_hour']==9 and merged['end_hour']==18 and merged['grace_minutes']==15,'The approved attendance schedule is fixed at 09:00–18:00 with a 15-minute grace period.',400)
+    require(merged.get('absence_deduction_days')==4,'The approved unauthorized absence deduction is fixed at four working days.',400)
     require(isinstance(merged['overtime_multiplier'],(int,float)) and 0<=merged['overtime_multiplier']<=5,'Invalid overtime multiplier.',400)
     require(merged['approval_role'] in ('leader','manager','hr'),'Invalid approval role.',400)
     require(isinstance(merged['approval_chain'],list) and 1<=len(merged['approval_chain'])<=5 and all(v in ('leader','manager','hr','owner') for v in merged['approval_chain']),'Approval chain must contain 1–5 leader, manager, hr or owner stages.',400)
@@ -205,7 +212,7 @@ def save_settings(db,u,p):
     return {'message':'Policies saved.'}
 
 def provision(db,u,p):
-    require(u['role'] in ('hr','admin'))
+    require(u['role']=='hr')
     eid=int(p.get('employee_id',0))
     require(one(db,'SELECT id FROM employees WHERE id=?',(eid,)),'Employee not found.',404)
     role=p.get('role','employee')
@@ -218,7 +225,7 @@ def provision(db,u,p):
     return {'message':'User account created.'}
 
 def hire_candidate(db,u,ident,p):
-    require(u['role'] in ('hr','admin'))
+    require(u['role']=='hr')
     candidate=one(db,'SELECT * FROM candidates WHERE id=?',(ident,))
     require(candidate is not None,'Candidate not found.',404)
     require(not candidate['employee_id'],'Candidate already has an employee record.',409)

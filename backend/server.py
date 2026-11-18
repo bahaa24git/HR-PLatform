@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from . import db as database
 from .db import rows, one, ROOT, verify_password
 from .catalog import CATALOG
-from .service import Problem, require, settings, scope_ids, list_resource, create_resource, update_resource, decide_leave, attendance_action, payroll_action, lookups, dashboard, check_employee
+from .service import Problem, require, settings, scope_ids, list_resource, create_resource, update_resource, decide_leave, attendance_action, review_attendance, grant_onboarding_exception, payroll_action, lookups, dashboard, check_employee
 from .workflows import cases, survey, resignation_action, upload, documents, save_settings, provision, hire_candidate
 from .ai import ask, AGENTS, conversation_history
 from .insights import attendance_report, workforce, performance_insights, performance_note, apply_templates, training, assign_team
@@ -24,6 +24,8 @@ from .insights import attendance_report, workforce, performance_insights, perfor
 LOGIN_ATTEMPTS={}
 
 def public_user(u):
+    if u.get('role')=='admin':
+        return {k:u[k] for k in ('id','employee_id','email','role','name') if k in u}
     return {k:v for k,v in u.items() if k!='password_hash'}
 
 class Handler(BaseHTTPRequestHandler):
@@ -61,8 +63,10 @@ class Handler(BaseHTTPRequestHandler):
         token=cookie.get('hr_session')
         require(token is not None,'Please log in.',401)
         digest=hashlib.sha256(token.value.encode()).hexdigest()
-        u=one(db,"SELECT u.id,u.employee_id,u.email,u.role,e.name,e.department_id,e.status FROM sessions s JOIN users u ON u.id=s.user_id JOIN employees e ON e.id=u.employee_id WHERE s.token_hash=? AND s.expires_at>? AND e.status!='Archived'",(digest,datetime.now().isoformat()))
+        u=one(db,"SELECT u.id,u.employee_id,u.email,u.role,e.name,e.department_id,e.status,e.position_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN employees e ON e.id=u.employee_id WHERE s.token_hash=? AND s.expires_at>? AND e.status!='Archived'",(digest,datetime.now().isoformat()))
         require(u is not None,'Your session has expired. Please log in.',401)
+        if u['role']=='admin':
+            u={k:u[k] for k in ('id','employee_id','email','role','name')}
         return u
 
     def origin_check(self):
@@ -119,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
             require(len(attempts)<20,'Too many login attempts. Try again in five minutes.',429)
             LOGIN_ATTEMPTS[client]=attempts+[now]
             email=str(p.get('email','')).lower().strip()
-            user=one(db,"SELECT u.*,e.name,e.department_id,e.status FROM users u JOIN employees e ON e.id=u.employee_id WHERE lower(u.email)=? AND e.status!='Archived'",(email,))
+            user=one(db,"SELECT u.*,e.name,e.department_id,e.status,e.position_id FROM users u JOIN employees e ON e.id=u.employee_id WHERE lower(u.email)=? AND e.status!='Archived'",(email,))
             # Do equivalent hashing work for unknown users.
             hashed=user['password_hash'] if user else 'invalid$'+('0'*64)
             valid=verify_password(str(p.get('password','')),hashed)
@@ -144,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/dashboard' and method=='GET':
             if u['role']=='owner':
                 from .business import analytics
-                return {**analytics(db,u),'total_employees':one(db,"SELECT COUNT(*) AS n FROM employees WHERE status!='Archived'")['n']},None
+                return analytics(db,u),None
             return dashboard(db,u),None
         if parts[0]=='resources' and len(parts)>=2:
             table=parts[1]
@@ -155,6 +159,18 @@ class Handler(BaseHTTPRequestHandler):
             if method=='POST': return attendance_action(db,u,p),None
             return attendance_report(db,u)['records'],None
         if path=='/api/attendance-report' and method=='GET': return attendance_report(db,u),None
+        if path=='/api/attendance-reviews':
+            require(u['role']=='hr','Only HR may review attendance classifications.')
+            if method=='GET':
+                pending=[r for r in attendance_report(db,u)['records'] if (r.get('id',0)<0 or (r.get('classification')=='Absent' and r.get('review_status')=='Pending'))]
+                names={r['id']:r['name'] for r in rows(db,'SELECT id,name FROM employees')}
+                return [{**r,'name':names.get(r['employee_id'],''),'missing':r['id']<0} for r in pending],None
+            if method=='POST':return review_attendance(db,u,int(p.get('attendance_id') or 0),p.get('decision'),p.get('reason'),p.get('employee_id'),p.get('day')),None
+        if path=='/api/onboarding-exceptions':
+            if method=='GET':
+                require(u['role']=='hr','Only HR may view onboarding exceptions.')
+                return rows(db,'SELECT x.*,e.name AS employee FROM onboarding_exceptions x JOIN employees e ON e.id=x.employee_id ORDER BY x.id DESC'),None
+            if method=='POST':return grant_onboarding_exception(db,u,p),None
         if path=='/api/workforce' and method=='GET': return workforce(db,u),None
         if path=='/api/performance-insights' and method=='GET': return performance_insights(db,u),None
         if path=='/api/performance-notes' and method=='POST': return performance_note(db,u,p),None
@@ -180,7 +196,9 @@ class Handler(BaseHTTPRequestHandler):
             data=(ROOT/'data/uploads'/r['storage_key']).read_bytes()
             return data,{'Content-Type':r['mime'],'Content-Disposition':"attachment; filename*=UTF-8''"+__import__('urllib.parse',fromlist=['quote']).quote(r['name'])}
         if path=='/api/settings':
-            if method=='GET': return settings(db),None
+            if method=='GET':
+                require(u['role']=='hr','Only HR may view employee and attendance policy settings.')
+                return settings(db),None
             if method=='PATCH': return save_settings(db,u,p),None
         if path=='/api/accounts' and method=='POST': return provision(db,u,p),None
         if len(parts)==3 and parts[0]=='candidates' and parts[2]=='hire' and method=='POST': return hire_candidate(db,u,int(parts[1]),p),None
@@ -233,14 +251,15 @@ def main():
     parser.add_argument('--host',default=os.getenv('HR_HOST','127.0.0.1'))
     parser.add_argument('--port',type=int,default=int(os.getenv('HR_PORT','8000')))
     parser.add_argument('--init-only',action='store_true')
+    parser.add_argument('--demo',action='store_true',help='Explicitly seed the legacy starter demo in the selected database.')
     parser.add_argument('--no-demo',action='store_true')
     args=parser.parse_args()
-    database.initialize(demo=not args.no_demo)
+    database.initialize(demo=args.demo and not args.no_demo)
     if args.init_only:
         print('Database initialized.'); return
     server=ThreadingHTTPServer((args.host,args.port),Handler)
     print(f'Northstar People ready at http://{args.host}:{args.port}',flush=True)
-    print('Fictional development data. Demo AI is labeled in the application.',flush=True)
+    print('Demo seeding is opt-in. Fictional employees are added only when --demo is supplied.',flush=True)
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally: server.server_close()

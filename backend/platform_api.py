@@ -7,41 +7,32 @@ from datetime import date, datetime
 from urllib.parse import parse_qs, urlsplit
 from .db import rows, one, insert, ROOT, password_hash
 from .catalog import CATALOG
-from .service import require, Problem, settings, lookups, list_resource, scope_ids, notify
-from .business_catalog import BUSINESS, ADMIN
+from .service import require, Problem, settings, lookups, list_resource, scope_ids, notify, company_today
+from .business_catalog import BUSINESS
+from .access import hr_modules, business_module, allowed_pages
 from . import business as b
 from .people_policy import discussion, termination
 from .ai import configuration, AGENTS
 
-def hr_modules(u):
-    all_names=set(CATALOG)
-    if u['role']=='owner':return all_names & {'announcements','contracts','articles','recognition','surveys'}
-    if u['role'] in ('hr','admin'):return all_names
-    if u['role'] not in ('manager','leader','sales_leader'):all_names-={'jobs','candidates','interviews','salary_components'}
-    if u['role'] not in ('leader','sales_leader'):all_names.discard('kpi_templates')
-    if u['role'] in ('sales','sales_manager','accountant','project_manager','executive'):all_names-={'positions','kpi_templates','employee_skills'}
-    return all_names
-
 def bootstrap(db,u):
     import copy
     config=settings(db);config['ai_mode']=configuration()['mode']
+    if u['role']=='admin':config={key:config[key] for key in ('company_name','currency','timezone') if key in config}
     look=lookups(db,u)
     for name in BUSINESS:
         if name=='team_access':continue
-        if b.allowed_module(u,name):look[name]=b.records(db,u,name)
-    look['employees']=rows(db,'SELECT id,name,department_id,team_id,leader_id,seniority_id,position_id FROM employees ORDER BY name')
+        if b.allowed_module(db,u,name):look[name]=b.records(db,u,name)
     look['roles']=rows(db,'SELECT id,label FROM roles')
-    look['positions']=rows(db,'SELECT * FROM positions')
-    look['tasks']=list_resource(db,u,'tasks')
-    look['seniorities']=rows(db,'SELECT * FROM seniorities')
-    look['jobs']=list_resource(db,u,'jobs') if u['role'] in ('hr','manager','leader') else []
-    look['candidates']=list_resource(db,u,'candidates') if u['role'] in ('hr','manager','leader') else []
+    if u['role']!='admin':
+        look['tasks']=list_resource(db,u,'tasks')
+        look['jobs']=list_resource(db,u,'jobs') if 'jobs' in hr_modules(u['role']) else []
+        look['candidates']=list_resource(db,u,'candidates') if 'candidates' in hr_modules(u['role']) else []
     templates=rows(db,'SELECT * FROM report_templates')
-    catalog=copy.deepcopy({k:v for k,v in BUSINESS.items() if b.allowed_module(u,k)})
+    catalog=copy.deepcopy({k:v for k,v in BUSINESS.items() if b.allowed_module(db,u,k)})
     if 'leads' in catalog:
         for f in catalog['leads']['fields']:
             if f['name']=='status':f['options']=[r['name'] for r in rows(db,'SELECT name FROM lead_statuses ORDER BY position')]
-    return {'user':u,'catalog':{k:v for k,v in CATALOG.items() if k in hr_modules(u)},'business_catalog':catalog,'lookups':look,'settings':config,'agents':AGENTS,'ai':configuration(),'report_templates':templates,'monthly_survey_submitted':bool(one(db,'SELECT 1 FROM monthly_survey_receipts WHERE user_id=? AND month=?',(u['id'],date.today().strftime('%Y-%m'))))}
+    return {'user':u,'catalog':{k:v for k,v in CATALOG.items() if k in hr_modules(u['role'])},'business_catalog':catalog,'allowed_pages':allowed_pages(db,u,catalog),'lookups':look,'settings':config,'agents':AGENTS,'ai':configuration(),'report_templates':templates,'monthly_survey_submitted':bool(one(db,'SELECT 1 FROM monthly_survey_receipts WHERE user_id=? AND month=?',(u['id'],company_today(db).strftime('%Y-%m'))))}
 
 def attachment(db,u,method,entity,ident,p):
     b.record(db,u,entity,ident)
@@ -62,12 +53,13 @@ def route(db,u,method,path,p,raw_path):
     query={k:v[0] for k,v in parse_qs(urlsplit(raw_path).query).items()}
     if path=='/api/bootstrap' and method=='GET':return bootstrap(db,u),None
     if path=='/api/notifications' and method=='GET':
+        require(u['role']!='admin','System administrators do not receive employee workflow notifications.')
         b.reminders(db,u)
         return rows(db,'SELECT * FROM notifications WHERE employee_id=? ORDER BY id DESC LIMIT 100',(u['employee_id'],)),None
     if path=='/api/performance-evidence' and method=='GET':return b.performance_evidence(db,u,int(query.get('employee_id',u['employee_id'])),query.get('month')),None
     if path=='/api/forecasts' and method=='POST':
-        require(u['role'] in ('owner','sales_manager','sales_leader','admin'))
-        month=str(p.get('month',date.today().strftime('%Y-%m')));require(__import__('re').fullmatch(r'\d{4}-(0[1-9]|1[0-2])',month),'Invalid forecast month.',400)
+        require(u['role'] in ('owner','sales_manager','sales_leader'))
+        month=str(p.get('month',company_today(db).strftime('%Y-%m')));require(__import__('re').fullmatch(r'\d{4}-(0[1-9]|1[0-2])',month),'Invalid forecast month.',400)
         result=b.analytics(db,u,{'start':month+'-01','end':month+'-31'})
         insert(db,'forecast_snapshots',dict(user_id=u['id'],month=month,predicted_cents=result['forecast_cents']))
         return {'message':'A dated forecast snapshot was recorded; compare it with subsequent won value.'},None
@@ -120,40 +112,46 @@ def route(db,u,method,path,p,raw_path):
         return {'message':'Revision submitted with prior review history retained.'},None
     if path=='/api/terminations':return termination(db,u,method,p),None
     if path=='/api/admin/users':
-        require(u['role'] in ADMIN)
+        require(u['role'] in ('hr','admin'))
         if method=='GET':return rows(db,'SELECT u.id,u.employee_id,e.name,u.email,u.role FROM users u JOIN employees e ON e.id=u.employee_id'),None
+        require(method=='PATCH','Method not allowed.',405)
         ident=int(p.get('id',0));r=one(db,'SELECT id,employee_id,email,role FROM users WHERE id=?',(ident,));require(r is not None,'Account not found.',404)
         role=p.get('role');require(one(db,'SELECT id FROM roles WHERE id=?',(role,)),'Invalid role.',400)
+        if u['role']=='admin':require(role in ('admin','employee'),'System administration cannot grant HR, payroll, owner, or business roles.',403)
         require(ident!=u['id'] or role==u['role'],'You cannot remove your own administrative access.',409)
         db.execute('UPDATE users SET role=? WHERE id=?',(role,ident));db.execute('DELETE FROM sessions WHERE user_id=?',(ident,))
         b.audit(db,u,'users',ident,'Role changed',r,{'role':role},str(p.get('reason','')))
         return {'message':'Role updated; prior sessions revoked.'},None
     if path=='/api/admin/team-access' and method=='POST':
-        require(u['role'] in ADMIN);uid=int(p['user_id']);team=int(p['team_id'])
+        require(u['role']=='hr');uid=int(p['user_id']);team=int(p['team_id'])
         db.execute('INSERT OR IGNORE INTO team_access(user_id,team_id) VALUES(?,?)',(uid,team));b.audit(db,u,'team_access',team,'Access assigned',after={'user_id':uid})
         return {'message':'Team supervision granted.'},None
     if path=='/api/audit' and method=='GET':
         require(u['role'] in ('owner','hr','admin','sales_manager','accountant'))
-        data=rows(db,'SELECT a.id,a.actor_id,e.name AS actor,a.entity,a.record_id,a.action,a.reason,a.created_at FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_id LEFT JOIN employees e ON e.id=u.employee_id ORDER BY a.id DESC LIMIT 500')
+        if u['role']=='admin':
+            data=rows(db,"SELECT a.id,a.actor_id,e.name AS actor,a.entity,a.record_id,a.action,a.reason,a.created_at FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_id LEFT JOIN employees e ON e.id=u.employee_id WHERE a.entity IN ('users','system') ORDER BY a.id DESC LIMIT 500")
+        else:
+            data=rows(db,'SELECT a.id,a.actor_id,e.name AS actor,a.entity,a.record_id,a.action,a.reason,a.created_at FROM audit_logs a LEFT JOIN users u ON u.id=a.actor_id LEFT JOIN employees e ON e.id=u.employee_id ORDER BY a.id DESC LIMIT 500')
         result=[]
         for row in data:
             if row['entity'] in BUSINESS:
-                if not b.allowed_module(u,row['entity']):continue
+                if not b.allowed_module(db,u,row['entity']):continue
                 if row['record_id'] and row['entity']!='team_access':
                     try:b.record(db,u,row['entity'],row['record_id'])
                     except Problem:continue
-            elif u['role'] not in ('hr','admin'):
+            elif u['role'] not in ('hr',):
                 if row['entity']!='termination_requests' or u['role']!='owner':continue
             result.append(row)
         return result,None
     if path=='/api/saved-views':
+        require(u['role']!='admin','System administrators do not have business-data access.')
         if method=='GET':return rows(db,'SELECT * FROM saved_views WHERE user_id=?',(u['id'],)),None
-        entity=p.get('entity');require(entity in BUSINESS and b.allowed_module(u,entity))
+        entity=p.get('entity');require(entity in BUSINESS and b.allowed_module(db,u,entity))
         ident=insert(db,'saved_views',dict(user_id=u['id'],entity=entity,name=str(p.get('name','My view'))[:100],filters=json.dumps(p.get('filters',{})),columns=json.dumps(p.get('columns',[]))))
         return {'id':ident,'message':'View saved.'},None
     if path=='/api/feedback':
         from .workflows import cases
-        handler=u['role'] in ('hr','admin','owner')
+        handler=u['role'] in ('hr','owner')
         if method=='GET':
             result=cases(db,u,'GET',{})
             if not handler:result=[{k:v for k,v in r.items() if k not in ('id','case_ref','employee_id','owner_id')} for r in result]

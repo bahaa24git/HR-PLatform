@@ -61,7 +61,7 @@ def initialize(path=None, demo=True):
         db.executescript((ROOT / 'backend/migrations/003_approval_chains.sql').read_text(encoding='utf-8'))
     if not db.execute('SELECT version FROM schema_versions WHERE version=4').fetchone():
         db.executescript((ROOT / 'backend/migrations/004_hiring_link.sql').read_text(encoding='utf-8'))
-    for version,filename in [(5,'005_company_platform.sql'),(6,'006_people_governance.sql'),(7,'007_delivery_and_reporting.sql'),(8,'008_case_visibility.sql'),(9,'009_lead_status_configuration.sql'),(10,'010_advisor_history.sql')]:
+    for version,filename in [(5,'005_company_platform.sql'),(6,'006_people_governance.sql'),(7,'007_delivery_and_reporting.sql'),(8,'008_case_visibility.sql'),(9,'009_lead_status_configuration.sql'),(10,'010_advisor_history.sql'),(11,'011_access_attendance_demo.sql')]:
         if not db.execute('SELECT version FROM schema_versions WHERE version=?',(version,)).fetchone():
             backup_path=path.parent/'backups'/f'{path.stem}-before-v{version}.sqlite3'
             if str(path)!=':memory:':
@@ -73,9 +73,9 @@ def initialize(path=None, demo=True):
     if demo and not db.execute('SELECT id FROM users LIMIT 1').fetchone():
         seed(db)
     if demo and not db.execute('SELECT id FROM payroll LIMIT 1').fetchone():
-        from .service import simulate_payroll
-        previous_month=(date.today().replace(day=1)-timedelta(days=1)).strftime('%Y-%m')
-        for employee in rows(db,'SELECT id FROM employees'):
+        from .service import simulate_payroll, company_today
+        previous_month=(company_today(db).replace(day=1)-timedelta(days=1)).strftime('%Y-%m')
+        for employee in rows(db,"SELECT e.id FROM employees e LEFT JOIN users u ON u.employee_id=e.id WHERE COALESCE(u.role,'employee') NOT IN ('owner','admin')"):
             value=simulate_payroll(db,employee['id'],previous_month)
             value['status']='Approved'
             insert(db,'payroll',value)
@@ -85,7 +85,8 @@ def initialize(path=None, demo=True):
             for title,target,weight,direction in definitions:
                 insert(db,'kpi_templates',dict(position_id=position_id,title=title,target=target,weight=weight,direction=direction))
     if demo and not db.execute('SELECT id FROM performance_periods LIMIT 1').fetchone():
-        current=date.today().replace(day=1)
+        from .service import company_today, company_now
+        current=company_today(db).replace(day=1)
         previous=(current-timedelta(days=1)).replace(day=1)
         prev=insert(db,'performance_periods',dict(name=previous.strftime('%B %Y'),start=previous.isoformat(),end=(current-timedelta(days=1)).isoformat()))
         curr=insert(db,'performance_periods',dict(name=current.strftime('%B %Y'),start=current.isoformat(),end=(current+timedelta(days=32)).replace(day=1).isoformat()))
@@ -93,14 +94,15 @@ def initialize(path=None, demo=True):
         for k in rows(db,'SELECT * FROM kpis'):
             insert(db,'kpis',dict(employee_id=k['employee_id'],period_id=prev,title=k['title'],target=k['target'],actual=round(k['actual']*.9,2),weight=k['weight'],direction=k['direction'],status='Approved'))
         for plan in rows(db,'SELECT * FROM learning_plans'):
-            db.execute('UPDATE learning_plans SET session_at=?,baseline_kpi=65,followup_kpi=0 WHERE id=?',((datetime.now()+timedelta(days=3+plan['id']%5)).replace(hour=10,minute=0,second=0,microsecond=0).isoformat(),plan['id']))
+            db.execute('UPDATE learning_plans SET session_at=?,baseline_kpi=65,followup_kpi=0 WHERE id=?',((company_now(db)+timedelta(days=3+plan['id']%5)).replace(hour=10,minute=0,second=0,microsecond=0).isoformat(),plan['id']))
     from .platform_setup import configure
     configure(db)
     db.commit()
     db.close()
 
 def seed(db):
-    today = date.today()
+    from .service import company_today
+    today = company_today(db)
     month = today.strftime('%Y-%m')
     ds = lambda n: (today + timedelta(days=n)).isoformat()
     for i, name in enumerate(['People & Culture', 'Creative Studio', 'Growth & Marketing', 'Sales'], 1):
@@ -135,17 +137,19 @@ def seed(db):
         for n in range(1,22):
             day = today-timedelta(days=n)
             if day.weekday() in (4,5): continue
-            late = 15 if (n+i)%8==0 else 0
-            start = datetime.combine(day,datetime.min.time()).replace(hour=9,minute=late)
-            insert(db,'attendance',dict(employee_id=i,day=day.isoformat(),check_in=start.isoformat(),check_out=start.replace(hour=17).isoformat(),minutes=480,late_minutes=late,overtime_minutes=0,work_mode=['Office','Remote','Flexible'][i%3],exception='Late arrival' if late else ''))
+            late = 1 if (n+i)%8==0 else 0
+            start = datetime.combine(day,datetime.min.time()).replace(hour=9,minute=16 if late else 0)
+            checkout = datetime.combine(day,datetime.min.time()).replace(hour=18)
+            insert(db,'attendance',dict(employee_id=i,day=day.isoformat(),check_in=start.isoformat(),check_out=checkout.isoformat(),minutes=int((checkout-start).total_seconds()/60),late_minutes=late,overtime_minutes=0,work_mode=['Office','Remote','Flexible'][i%3],exception='Late arrival' if late else '',classification='Late' if late else 'Normal',review_status='Not required'))
         for j,(title,target) in enumerate([('Quality score',100),('Deadline adherence',100),('Delivery target',20)]):
             insert(db,'kpis',dict(employee_id=i,title=title,target=target,actual=round(target*(.72+(i%4)*.06)),weight=[40,35,25][j],status='Approved'))
         insert(db,'reports',dict(employee_id=i,month=month,accomplishments='Delivered the monthly campaign and improved team documentation.',strengths='Clear communication and thoughtful execution.',challenges='Review handoffs occasionally delay delivery.',skills_improved='Planning',support='Earlier feedback from stakeholders.',workload=3+i%3,clarity=4))
         for j,title in enumerate(['Prepare campaign concepts','Review quarterly deliverables','Update project handover']):
             insert(db,'tasks',dict(employee_id=i,team_id=dep,title=title,due=ds(j*3-1),priority=['High','Medium','Low'][j],complexity=3+j,estimated_hours=6+j*3,actual_hours=j*2,status=['In progress','To do','Done'][(i+j)%3]))
         insert(db,'notifications',dict(employee_id=i,title='Welcome to Northstar People',detail='Your workspace is ready. Explore your dashboard and complete your profile.'))
-    defaults = {'company_name':'Northstar Studio','currency':'EGP','timezone':'Africa/Cairo','start_hour':9,'end_hour':17,'grace_minutes':10,'workdays':[6,0,1,2,3], 'overtime_multiplier':1.5,'working_days':22,'late_deduction':False,'notice_days':30,'approval_role':'leader','geofence':{'enabled':False,'apply_remote':False,'latitude':30.0444,'longitude':31.2357,'radius_m':300},'survey_minimum':3}
-    for key,value in defaults.items(): insert(db,'settings',{'key':key,'value':json.dumps(value)})
+    defaults = {'company_name':'Northstar Studio','currency':'EGP','timezone':'Africa/Cairo','start_hour':9,'end_hour':18,'grace_minutes':15,'absence_deduction_days':4,'workdays':[6,0,1,2,3], 'overtime_multiplier':1.5,'working_days':22,'late_deduction':False,'notice_days':30,'approval_role':'leader','geofence':{'enabled':False,'apply_remote':False,'latitude':30.0444,'longitude':31.2357,'radius_m':300},'survey_minimum':3}
+    for key,value in defaults.items():
+        db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)',(key,json.dumps(value)))
     for name,deduct,factor,unit in [('Annual leave',1,0,'days'),('Sick leave',0,0,'days'),('Emergency leave',1,0,'days'),('Late arrival permission',0,0,'hours'),('Early departure permission',0,0,'hours'),('Absence permission',0,1,'days')]:
         insert(db,'leave_types',dict(name=name,deduct_balance=deduct,payroll_factor=factor,unit=unit))
     insert(db,'leave_requests',dict(employee_id=6,type_id=1,start=ds(4),end=ds(5),units=2,reason='Family time',approver_id=4))

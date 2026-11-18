@@ -2,7 +2,7 @@
 
 An integrated company-management application for a digital marketing and media-production company: CRM → sales → clients/contracts → projects/campaigns → tasks/deliverables → employee performance, with HR, analytics and a permission-aware real-model advisor.
 
-This upgrades the existing Northstar HR application **in place**. Existing employee, contract, attendance, leave, payroll and report records are retained. Commercial records start empty; no fabricated revenue or CRM transactions are inserted during normal startup. Historical fictional HR data from the original graduation demo remains clearly developmental.
+This upgrades the existing Northstar HR application **in place**. Existing employee, contract, attendance, leave, payroll and report records are retained. Commercial records start empty; no fabricated company data is inserted during normal startup. A complete fictional organization is available only in its dedicated disposable demo database.
 
 ## Start
 
@@ -33,7 +33,38 @@ $env:HR_DATABASE = 'data/separate-company.sqlite3'
 python -m backend.server
 ```
 
-Starting with a new path creates a fresh fictional HR demonstration and empty commercial workspace. `--no-demo` initializes schema/reference configuration without demonstration employees; it is intended for developers provisioning an organization, not as an administrator-setup wizard.
+Normal startup does not seed fictional employees or company transactions. A new installation receives neutral company configuration and an empty workspace. The older 12-person starter is available only with the explicit `--demo` option; it is separate from the complete company dataset described below.
+
+## Isolated 50-person demo company
+
+Create or verify the dedicated demo database:
+
+```sh
+python scripts/seed_demo_company.py
+```
+
+The only target is `data/northstar-demo-company.sqlite3`. The seed command refuses an existing unmarked database, refuses to target the configured working database, and verifies the dataset read-only on subsequent runs. It creates 50 employees, 10 active projects, 12 client accounts, 10 approved service contracts and quotations, CRM history, campaigns, project assignments, tasks, milestones, deliverable reviews, six months of attendance/KPI/payroll history, leave approvals, training, onboarding and notifications.
+
+Start the app against that database without changing `.env`:
+
+```sh
+HR_DATABASE=data/northstar-demo-company.sqlite3 python -m backend.server
+```
+
+PowerShell:
+
+```powershell
+$env:HR_DATABASE = 'data/northstar-demo-company.sqlite3'
+python -m backend.server
+```
+
+To rebuild it, the command prints the exact destructive target before removing only that file and its SQLite journal files:
+
+```sh
+python scripts/seed_demo_company.py --reset --confirm-reset DELETE-NORTHSTAR-DEMO-COMPANY
+```
+
+The demo logins use password **`Demo2026!`**. Examples include `owner@demo.local`, `hr@demo.local`, `nora@demo.local`, `tarek.mostafa@northstar.demo` (system administrator), `sherif.adel@northstar.demo` (sales contracts manager), `mahmoud.el.sayed@northstar.demo` (project manager), and `mona.reda@northstar.demo` (accountant). The Graphic Designer Nora Khalil is assigned to one project only; the explicit campaign capability is limited to that project. These credentials and records do not exist in the normal application database.
 
 ## Existing demo logins
 
@@ -49,7 +80,7 @@ Development only; fictional people. Password: **`Demo2026!`** for each existing 
 | Employee | `nora@demo.local` |
 | Employee | `sara@demo.local` |
 
-Existing other employee accounts (`youssef`, `karim`, `dina`, `leila`, `ziad` at `@demo.local`) are retained.
+Existing other starter accounts (`youssef`, `karim`, `dina`, `leila`, `ziad` at `@demo.local`) are available only in the legacy `--demo` starter and in the isolated company database.
 
 New roles are supported: Sales Employee, Sales Team Leader, Sales Contracts Manager, Project Manager, Accounting, Executive Management and Administrator. To provision them, HR creates/updates an employee with department/team/seniority, then creates their account from the employee record or changes an existing account through **Users & roles**.
 
@@ -146,7 +177,7 @@ backend/people_policy.py      KPI, assignment, discussion and lifecycle rules
 backend/reporting.py          Branded PDF generation and Arabic shaping
 backend/ai.py                 Real provider, scoped retrieval, safe conversations
 backend/platform_setup.py     Idempotent editable reference configuration
-backend/migrations/           Versions 1–9; additive transformation migrations 5–9
+backend/migrations/           Versions 1–11; additive transformation and policy migrations
 frontend/app.js               Role shell, navigation and dashboards
 frontend/ui.js                Shared controls, form rendering and API helpers
 frontend/business-ui.js       CRM pipeline, relationships, quotes and insights
@@ -156,7 +187,7 @@ frontend/styles.css           New responsive design system
 tests/                        Database, HTTP and browser scenarios
 ```
 
-Migrations 5–9 add commercial/organization records, people governance, department delivery and explicit case sharing. Legacy IDs and records are retained. Before each transformation migration the initializer saves a SQLite backup into `data/backups/`. A separate pre-transformation backup of the working database was also taken. `python scripts/verify_migration.py` reproduces a v4 upgrade and asserts legacy values/IDs and foreign keys are retained.
+Migrations 5–11 add commercial/organization records, people governance, department delivery, explicit case sharing, and access/attendance policies. Legacy IDs and records are retained. Before each transformation migration the initializer saves a SQLite backup into `data/backups/`. A separate pre-transformation backup of the working database was also taken. `python scripts/verify_migration.py` reproduces a v4 upgrade and asserts legacy values/IDs and foreign keys are retained.
 
 The codebase audit and stage plan are in [TRANSFORMATION_PLAN.md](docs/TRANSFORMATION_PLAN.md). See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for permission/data boundaries.
 

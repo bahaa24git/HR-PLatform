@@ -1,11 +1,13 @@
 """Application services. Every read and mutation is scoped before data leaves this layer."""
 import base64
+import calendar
 import hashlib
 import json
 import math
 import re
 import secrets
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from .db import rows, one, insert, ROOT
@@ -22,11 +24,26 @@ def require(ok, message='You do not have permission for this action.', status=40
 def settings(db):
     return {r['key']:json.loads(r['value']) for r in rows(db,'SELECT * FROM settings')}
 
+def company_zone(db):
+    try:return ZoneInfo(settings(db).get('timezone','Africa/Cairo'))
+    except (ZoneInfoNotFoundError,ValueError):return ZoneInfo('UTC')
+
+def company_now(db):return datetime.now(company_zone(db))
+
+def company_today(db):return company_now(db).date()
+
+def add_months(value,months):
+    month=value.month-1+months
+    year=value.year+month//12
+    month=month%12+1
+    return date(year,month,min(value.day,calendar.monthrange(year,month)[1]))
+
 def notify(db, eid, title, detail):
     insert(db,'notifications',dict(employee_id=eid,title=title,detail=detail))
 
 def scope_ids(db,u):
-    if u['role'] in ('hr','admin'): return [r['id'] for r in rows(db,'SELECT id FROM employees')]
+    if u['role']=='hr': return [r['id'] for r in rows(db,'SELECT id FROM employees')]
+    if u['role']=='admin': return []
     if u['role'] in ('sales_leader','sales_manager'):
         from .business import commercial_people
         return list(commercial_people(db,u))
@@ -35,20 +52,52 @@ def scope_ids(db,u):
     return [u['employee_id']]
 
 def check_employee(db,u,eid):
+    require(u['role']!='admin','System administrators do not have employee-record access.')
     require(int(eid) in scope_ids(db,u))
 
 def permission(db,u,p):
-    if u['role']=='admin':return True
+    if u['role']=='admin':return False
     return bool(one(db,'SELECT 1 FROM role_permissions WHERE role_id=? AND permission_id=?',(u['role'],p)))
 
 def employee_view(db,u,r):
     r=dict(r)
-    if u['role'] not in ('hr','admin') and r['id']!=u['employee_id']:
+    if u['role']!='hr' and r['id']!=u['employee_id']:
         for key in ['salary_cents','annual_days','phone','email','skills']:
             r.pop(key,None)
     return r
 
+def task_deadline_status(db, task, today=None, now=None):
+    """Return one shared, company-timezone deadline label without changing workflow status."""
+    if task.get('status') in ('Done','Completed','Approved'):
+        return 'Completed'
+    due_value=task.get('due')
+    if not due_value:return 'No deadline'
+    try:
+        tz_name=settings(db).get('timezone','Africa/Cairo')
+        zone=ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone=ZoneInfo('UTC')
+    if 'T' in due_value:
+        due=datetime.fromisoformat(due_value)
+        due=due.replace(tzinfo=zone) if due.tzinfo is None else due.astimezone(zone)
+        clock=now or datetime.now(zone)
+        if clock.tzinfo is None:clock=clock.replace(tzinfo=zone)
+        else:clock=clock.astimezone(zone)
+        delta=(due-clock).total_seconds()
+        if delta < 0:return 'Overdue'
+        if due.date()==clock.date():return 'Due today'
+        days=(due.date()-clock.date()).days
+        return 'Due soon' if days<=3 else 'On track'
+    due=date.fromisoformat(due_value)
+    today=today or (now.astimezone(zone).date() if now and now.tzinfo else now.date() if now else datetime.now(zone).date())
+    delta=(due-today).days
+    if delta < 0:return 'Overdue'
+    if delta == 0:return 'Due today'
+    if delta <= 3:return 'Due soon'
+    return 'On track'
+
 def list_resource(db,u,table):
+    require(u['role']!='admin','System administrators do not have employee-record access.')
     require(table in CATALOG,'Unknown module',404)
     spec=CATALOG[table]
     data=rows(db,f'SELECT * FROM {table} ORDER BY id DESC')
@@ -60,16 +109,19 @@ def list_resource(db,u,table):
     if spec.get('employee'):
         data=[r for r in data if r['employee_id'] in ids or (table=='leave_requests' and r['approver_id']==u['employee_id'])]
         if table=='tasks':
-            from .business import project_ids
-            projects=project_ids(db,u)
-            data=[r for r in rows(db,'SELECT * FROM tasks ORDER BY id DESC') if r['employee_id'] in ids or r['project_id'] in projects]
-        if table in ('payroll','salary_components') and u['role'] not in ('hr','admin'):
+            managed_projects={r['id'] for r in rows(db,'SELECT id FROM projects WHERE manager_id=?',(u['employee_id'],))} if u['role']=='project_manager' else set()
+            data=[dict(r) for r in rows(db,'SELECT t.*,p.name AS project_name FROM tasks t LEFT JOIN projects p ON p.id=t.project_id ORDER BY t.id DESC')
+                  if r['employee_id'] in ids or (u['role']=='project_manager' and r['project_id'] in managed_projects)]
+            for task in data:
+                task['task_category']='Project task' if task.get('project_id') else 'Internal company task'
+                task['deadline_status']=task_deadline_status(db,task)
+        if table in ('payroll','salary_components') and u['role']!='hr':
             data=[r for r in data if r['employee_id']==u['employee_id']]
     if spec.get('recruit'):
-        require(u['role'] in ('hr','admin','manager','leader'))
+        require(u['role'] in ('hr','manager','leader'))
         jobs=rows(db,'SELECT id FROM jobs WHERE department_id=?',(u['department_id'],))
         jids={r['id'] for r in jobs}
-        if u['role'] not in ('hr','admin'):
+        if u['role']!='hr':
             if table=='jobs': data=[r for r in data if r['id'] in jids]
             elif table=='candidates': data=[r for r in data if r['job_id'] in jids]
             else:
@@ -81,7 +133,32 @@ def list_resource(db,u,table):
     if table in ('articles','surveys') and u['role'] not in ('hr','owner'):
         data=[r for r in data if r['status']=='Published']
     if table=='announcements': data.sort(key=lambda r:(r['pinned'],r['id']),reverse=True)
+    if table=='checklists' and u['role']!='hr':
+        today=company_today(db)
+        visible=[]
+        for item in data:
+            if item['kind']!='Onboarding':
+                visible.append(item);continue
+            joined=one(db,'SELECT joined FROM employees WHERE id=?',(item['employee_id'],))
+            if not joined:continue
+            expiry=add_months(date.fromisoformat(joined['joined']),3)
+            exception=one(db,'SELECT id FROM onboarding_exceptions WHERE employee_id=? AND starts_on<=? AND ends_on>=? ORDER BY id DESC LIMIT 1',(item['employee_id'],today.isoformat(),today.isoformat()))
+            if today<expiry or exception:visible.append(item)
+        data=visible
     return data
+
+def grant_onboarding_exception(db,u,p):
+    require(u['role']=='hr','Only HR may grant onboarding exceptions.')
+    eid=int(p.get('employee_id',0));employee=one(db,'SELECT id,joined FROM employees WHERE id=?',(eid,))
+    require(employee is not None,'Employee not found.',404)
+    starts=add_months(date.fromisoformat(employee['joined']),3)
+    try:ends=date.fromisoformat(str(p.get('ends_on','')))
+    except ValueError:raise Problem('Enter a valid exception end date.',400)
+    require(ends>=starts,'The extension must cover the date onboarding access expires.',400)
+    reason=str(p.get('reason','')).strip();require(1<=len(reason)<=2000,'A written HR exception reason is required.',400)
+    ident=insert(db,'onboarding_exceptions',dict(employee_id=eid,starts_on=starts.isoformat(),ends_on=ends.isoformat(),reason=reason,granted_by=u['id']))
+    insert(db,'audit_logs',dict(actor_id=u['id'],entity='onboarding_exceptions',record_id=ident,action='Exception granted',after_data=json.dumps({'employee_id':eid,'starts_on':starts.isoformat(),'ends_on':ends.isoformat()}),reason=reason))
+    return {'id':ident,'starts_on':starts.isoformat(),'ends_on':ends.isoformat(),'message':'HR onboarding exception recorded.'}
 
 def validate(fields,payload,partial=False):
     result={}
@@ -124,6 +201,7 @@ def validate(fields,payload,partial=False):
     return result
 
 def create_resource(db,u,table,p):
+    require(u['role']!='admin','System administrators do not have employee-record access.')
     require(table in CATALOG,'Unknown module',404)
     spec=CATALOG[table]
     require(u['role'] in spec.get('manage',[]) or spec.get('create_self'))
@@ -136,7 +214,7 @@ def create_resource(db,u,table,p):
     if spec.get('employee') and table!='employees':
         eid=int(v.get('employee_id') or u['employee_id'])
         if u['role'] not in spec.get('manage',[]):
-            eid=int(p.get('employee_id',u['employee_id'])) if table=='reports' and u['role'] in ('hr','admin','manager','leader') else u['employee_id']
+            eid=int(p.get('employee_id',u['employee_id'])) if table=='reports' and u['role'] in ('hr','manager','leader') else u['employee_id']
         if table!='tasks':check_employee(db,u,eid)
         v['employee_id']=eid
     if table=='employees':
@@ -152,18 +230,18 @@ def create_resource(db,u,table,p):
     if table=='employee_skills': require(v['proficiency']<=100,'Proficiency must be 0–100.',400)
     if table=='reports':
         require(1<=v['workload']<=5 and 1<=v['clarity']<=5,'Ratings must be between 1 and 5.',400)
-        require(v['kind']!='Leader evaluation' or u['role'] in ('hr','admin','manager','leader'),'Only leaders can submit leader evaluations.')
+        require(v['kind']!='Leader evaluation' or u['role'] in ('hr','manager','leader'),'Only leaders can submit leader evaluations.')
     if table=='learning_plans': require(v['pre_score']<=100,'Scores must be between 0 and 100.',400)
     if table=='tasks': require(1<=v['complexity']<=5,'Complexity must be between 1 and 5.',400)
     if table=='resignations':
         require(not one(db,"SELECT id FROM resignations WHERE employee_id=? AND status!='Withdrawn'",(u['employee_id'],)),'An active resignation already exists.',409)
         contract=one(db,"SELECT * FROM contracts WHERE employee_id=? AND status='Active' ORDER BY end DESC LIMIT 1",(u['employee_id'],))
         notice=contract['notice_days'] if contract else settings(db)['notice_days']
-        require(date.fromisoformat(v['last_day'])>=date.today()+timedelta(days=notice),f'The applicable notice period is {notice} days.',400)
-        v.update(submitted=date.today().isoformat(),notice_days=notice)
+        require(date.fromisoformat(v['last_day'])>=company_today(db)+timedelta(days=notice),f'The applicable notice period is {notice} days.',400)
+        v.update(submitted=company_today(db).isoformat(),notice_days=notice)
     if table in ('announcements','recognition'): v['author_id']=u['employee_id'] if table=='recognition' else u['id']
     if table=='articles': v['owner_id']=u['id']
-    if table=='jobs' and u['role'] not in ('hr','admin'): require(v['department_id']==u['department_id'])
+    if table=='jobs' and u['role']!='hr': require(v['department_id']==u['department_id'])
     if table=='interviews':
         require(v['candidate_id'] in [x['id'] for x in list_resource(db,u,'candidates')])
         check_employee(db,u,v['interviewer_id'])
@@ -172,9 +250,9 @@ def create_resource(db,u,table,p):
         require(v['end']>=v['start'],'End date must follow start date.',400)
     ident=insert(db,table,v)
     if table=='employees':
-        insert(db,'leave_balances',dict(employee_id=ident,year=date.today().year,entitlement=v['annual_days'],used=0))
+        insert(db,'leave_balances',dict(employee_id=ident,year=company_today(db).year,entitlement=v['annual_days'],used=0))
         for title in ['Complete personal information','Collect documents','Sign contract','Meet the team','Agree initial goals']:
-            insert(db,'checklists',dict(employee_id=ident,kind='Onboarding',title=title,due=(date.today()+timedelta(days=7)).isoformat()))
+            insert(db,'checklists',dict(employee_id=ident,kind='Onboarding',title=title,due=(company_today(db)+timedelta(days=7)).isoformat()))
         notify(db,ident,'Welcome to Northstar People','Your employee profile and onboarding checklist are ready.')
     if table=='leave_requests':
         emp=one(db,'SELECT * FROM employees WHERE id=?',(v['employee_id'],))
@@ -229,6 +307,7 @@ def ensure_balance(db,eid,year):
     db.execute('INSERT OR IGNORE INTO leave_balances(employee_id,year,entitlement) SELECT id,?,annual_days FROM employees WHERE id=?',(year,eid))
 
 def update_resource(db,u,table,ident,p):
+    require(u['role']!='admin','System administrators do not have employee-record access.')
     require(table in CATALOG,'Unknown module',404)
     from .people_policy import before_update, after_update
     previous=before_update(db,u,table,ident,p)
@@ -247,7 +326,7 @@ def update_resource(db,u,table,ident,p):
     }
     fields=CATALOG[table]['fields'] if manager else []
     own=r.get('employee_id')==u['employee_id']
-    if table in special and (manager or own or (table in ('reports','kpis') and u['role'] in ('hr','admin','manager','leader'))):
+    if table in special and (manager or own or (table in ('reports','kpis') and u['role'] in ('hr','manager','leader'))):
         fields=fields+[dict(name=n,label=l,type=t,required=False,options=o) for n,l,t,o in special[table] if n!='comment']
     require(bool(fields))
     if table in ('leave_requests','payroll','resignations'): raise Problem('Use the dedicated workflow action.',403)
@@ -268,7 +347,7 @@ def update_resource(db,u,table,ident,p):
     if 'target' in v: require(v['target']>0,'Target must exceed zero.',400)
     if 'weight' in v: require(v['weight']>0,'Weight must exceed zero.',400)
     if table=='learning_plans' and 'progress' in v: v['status']='Completed' if v['progress']==100 else 'In progress'
-    if table=='articles': v['updated_at']=datetime.now().isoformat(timespec='seconds')
+    if table=='articles': v['updated_at']=company_now(db).isoformat(timespec='seconds')
     if table=='candidates' and v.get('stage')=='Hired':
         require(bool(r.get('employee_id')),'Use Hire & onboard to record a human hiring decision and create the employee.',400)
     if table=='employees':
@@ -279,9 +358,9 @@ def update_resource(db,u,table,ident,p):
             require(one(db,'SELECT id FROM teams WHERE id=? AND department_id=?',(v['team_id'],v.get('department_id',old['department_id']))),'Team must belong to the selected department.',400)
         if 'annual_days' in v:
             require(v['annual_days']<=366,'Annual entitlement must be at most 366.',400)
-            balance=one(db,'SELECT * FROM leave_balances WHERE employee_id=? AND year=?',(ident,date.today().year))
+            balance=one(db,'SELECT * FROM leave_balances WHERE employee_id=? AND year=?',(ident,company_today(db).year))
             require(not balance or v['annual_days']>=balance['used'],'Entitlement cannot be less than already used leave.',400)
-            db.execute('UPDATE leave_balances SET entitlement=? WHERE employee_id=? AND year=?',(v['annual_days'],ident,date.today().year))
+            db.execute('UPDATE leave_balances SET entitlement=? WHERE employee_id=? AND year=?',(v['annual_days'],ident,company_today(db).year))
         changes={k:val for k,val in v.items() if old.get(k)!=val}
         if changes: insert(db,'employee_history',dict(employee_id=ident,kind='Profile update / promotion / transfer',detail=json.dumps(changes),actor_id=u['id']))
         if v.get('status')=='Archived': db.execute('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE employee_id=?)',(ident,))
@@ -294,7 +373,7 @@ def decide_leave(db,u,ident,p):
     r=one(db,'SELECT * FROM leave_requests WHERE id=?',(ident,))
     require(r is not None,'Request not found.',404)
     require(r['employee_id']!=u['employee_id'],'You cannot approve your own request.')
-    require(u['role'] in ('hr','admin') or (r['approver_id']==u['employee_id'] and u['role'] in ('leader','manager','owner')))
+    require(u['role']=='hr' or (r['approver_id']==u['employee_id'] and u['role'] in ('leader','manager','owner')))
     require(r['status']=='Pending','This request has already been decided.',409)
     decision=p.get('decision')
     require(decision in ('Approved','Rejected'),'Choose approve or reject.',400)
@@ -329,8 +408,44 @@ def decide_leave(db,u,ident,p):
     notify(db,r['employee_id'],'Request '+decision.lower(),f'Request #{ident}: {reason or decision}')
     return {'message':'Request '+decision.lower()+'.'}
 
+def classify_attendance(db,check_in):
+    """Classify one local company-time check-in using the approved boundaries."""
+    zone=company_zone(db)
+    instant=datetime.fromisoformat(check_in)
+    instant=instant.replace(tzinfo=zone) if instant.tzinfo is None else instant.astimezone(zone)
+    minute=instant.hour*60+instant.minute
+    start=9*60
+    if minute>11*60:return 'Absent'
+    if minute>start+15:return 'Late'
+    return 'Normal'
+
+def review_attendance(db,u,ident,decision,reason,employee_id=None,day=None):
+    require(u['role']=='hr','Only HR may review attendance classifications.')
+    record=one(db,'SELECT * FROM attendance WHERE id=?',(int(ident),)) if ident and int(ident)>0 else None
+    if record is None:
+        try:absent_day=date.fromisoformat(str(day))
+        except ValueError:raise Problem('Enter a valid absence date.',400)
+        target=one(db,"SELECT id,joined,work_mode FROM employees WHERE id=? AND status!='Archived'",(int(employee_id or 0),))
+        require(target is not None,'Employee not found.',404)
+        today=company_today(db)
+        require(today-timedelta(days=30)<=absent_day<today,'Only a past absence within the current review window may be recorded.',400)
+        require(absent_day.weekday() in settings(db)['workdays'] and target['joined']<=absent_day.isoformat(),'This is not a scheduled workday for the employee.',400)
+        require(not one(db,'SELECT id FROM attendance WHERE employee_id=? AND day=?',(target['id'],absent_day.isoformat())),'Attendance already exists for this employee and day.',409)
+        approved=one(db,"SELECT l.id FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE l.employee_id=? AND l.status='Approved' AND l.start<=? AND l.end>=? AND t.unit='days'",(target['id'],absent_day.isoformat(),absent_day.isoformat()))
+        require(not approved,'Approved leave covers this workday.',409)
+        new_id=insert(db,'attendance',dict(employee_id=target['id'],day=absent_day.isoformat(),work_mode=target['work_mode'],exception='No recorded attendance — HR review required',classification='Absent',review_status='Pending'))
+        record=one(db,'SELECT * FROM attendance WHERE id=?',(new_id,))
+    require(record['classification']=='Absent' and record['review_status']=='Pending','Only pending absence classifications can be reviewed.',409)
+    require(decision in ('Excused','Unauthorized'),'Choose Excused or Unauthorized.',400)
+    reason=str(reason or '').strip()
+    require(1<=len(reason)<=2000,'A review reason is required.',400)
+    db.execute('UPDATE attendance SET review_status=? WHERE id=?',(decision,ident))
+    insert(db,'attendance_reviews',dict(attendance_id=ident,reviewer_user_id=u['id'],decision=decision,reason=reason))
+    insert(db,'audit_logs',dict(actor_id=u['id'],entity='attendance',record_id=ident,action='Absence '+decision.lower(),after_data=json.dumps({'employee_id':record['employee_id'],'day':record['day'],'decision':decision}),reason=reason))
+    return {'message':'Attendance review recorded; the decision is auditable.'}
+
 def attendance_action(db,u,p):
-    require(u['role']!='owner','The owner account does not participate in employee attendance.')
+    require(u['role'] not in ('owner','admin'),'This account does not participate in employee attendance.')
     emp=one(db,'SELECT * FROM employees WHERE id=?',(u['employee_id'],))
     s=settings(db)
     geo=s['geofence']
@@ -342,18 +457,21 @@ def attendance_action(db,u,p):
         a=math.sin(math.radians(lat-geo['latitude'])/2)**2+math.cos(math.radians(lat))*math.cos(math.radians(geo['latitude']))*math.sin(math.radians(lon-geo['longitude'])/2)**2
         distance=6371000*2*math.asin(min(1,math.sqrt(a)))
         require(distance<=geo['radius_m'],'You are outside the approved attendance location.',400)
-    now=datetime.now().replace(microsecond=0)
+    now=company_now(db).replace(microsecond=0)
     day=now.date().isoformat()
     r=one(db,'SELECT * FROM attendance WHERE employee_id=? AND day=?',(u['employee_id'],day))
     if p.get('action')=='in':
         require(not r or not r['check_in'],'You have already checked in today.',409)
-        late=max(0,int((now-now.replace(hour=s['start_hour'],minute=0,second=0)).total_seconds()/60)-s['grace_minutes']) if emp['work_mode']!='Flexible' else 0
+        classification=classify_attendance(db,now.isoformat())
+        late=max(0,int((now-now.replace(hour=9,minute=0,second=0,microsecond=0)).total_seconds()/60)-15) if classification=='Late' else 0
+        review_status='Pending' if classification=='Absent' else 'Not required'
+        exception='Check-in after 11:00 — absence review required' if classification=='Absent' else 'Late arrival' if classification=='Late' else ''
         if not r: insert(db,'attendance',dict(employee_id=u['employee_id'],day=day,work_mode=emp['work_mode']))
-        db.execute('UPDATE attendance SET check_in=?,late_minutes=?,exception=? WHERE employee_id=? AND day=?',(now.isoformat(),late,'Late arrival' if late else '',u['employee_id'],day))
+        db.execute('UPDATE attendance SET check_in=?,late_minutes=?,exception=?,classification=?,review_status=? WHERE employee_id=? AND day=?',(now.isoformat(),late,exception,classification,review_status,u['employee_id'],day))
     elif p.get('action')=='out':
         require(r and r['check_in'] and not r['check_out'],'Check in first; checkout can be recorded once.',409)
         minutes=max(0,int((now-datetime.fromisoformat(r['check_in'])).total_seconds()/60))
-        early=max(0,int((now.replace(hour=s['end_hour'],minute=0,second=0)-now).total_seconds()/60)) if emp['work_mode']!='Flexible' else 0
+        early=max(0,int((now.replace(hour=18,minute=0,second=0,microsecond=0)-now).total_seconds()/60)) if emp['work_mode']!='Flexible' else 0
         overtime=max(0,minutes-(s['end_hour']-s['start_hour'])*60)
         db.execute('UPDATE attendance SET check_out=?,minutes=?,early_minutes=?,overtime_minutes=? WHERE id=?',(now.isoformat(),minutes,early,overtime,r['id']))
     else: raise Problem('Unknown attendance action.')
@@ -365,6 +483,7 @@ def simulate_payroll(db,eid,month):
     require(bool(re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])',month)),'Invalid payroll month.',400)
     emp=one(db,'SELECT * FROM employees WHERE id=?',(eid,))
     require(emp is not None,'Employee not found.',404)
+    require(not one(db,"SELECT 1 FROM users WHERE employee_id=? AND role IN ('owner','admin')",(eid,)),'Owner and system-administrator accounts are excluded from payroll.',403)
     s=settings(db)
     components=rows(db,'SELECT * FROM salary_components WHERE employee_id=? AND month=? AND approved=1',(eid,month))
     attendance=rows(db,'SELECT * FROM attendance WHERE employee_id=? AND day LIKE ?',(eid,month+'%'))
@@ -374,7 +493,11 @@ def simulate_payroll(db,eid,month):
     for record in attendance:
         approved=one(db,"SELECT COALESCE(SUM(l.units*60),0) AS minutes FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE l.employee_id=? AND l.status='Approved' AND l.start<=? AND l.end>=? AND t.name='Late arrival permission'",(eid,record['day'],record['day']))['minutes']
         late_minutes+=max(0,record['late_minutes']-approved)
-    late=money(hourly*Decimal(str(late_minutes))/60) if s['late_deduction'] else 0
+    # Late arrival is recorded but is not a payroll deduction in this policy.
+    late=0
+    unauthorized_absences=sum(record['classification']=='Absent' and record['review_status']=='Unauthorized' for record in attendance)
+    absence_days=int(s.get('absence_deduction_days',4))
+    absence_deduction=money(Decimal(emp['salary_cents'])/Decimal(str(s['working_days']))*Decimal(absence_days*unauthorized_absences))
     unpaid=Decimal(0)
     for r in rows(db,"SELECT l.*,t.payroll_factor FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE l.employee_id=? AND l.status='Approved' AND t.payroll_factor>0",(eid,)):
         start,end=date.fromisoformat(r['start']),date.fromisoformat(r['end'])
@@ -383,19 +506,19 @@ def simulate_payroll(db,eid,month):
         unpaid+=Decimal(str(r['units']))*Decimal(in_month)/Decimal(days)*Decimal(str(r['payroll_factor']))
     leave_deduction=money(Decimal(emp['salary_cents'])/Decimal(str(s['working_days']))*unpaid)
     adds=sum(c['amount_cents'] for c in components if c['kind']=='Addition')+overtime
-    deductions=sum(c['amount_cents'] for c in components if c['kind']=='Deduction')+late+leave_deduction
+    deductions=sum(c['amount_cents'] for c in components if c['kind']=='Deduction')+late+leave_deduction+absence_deduction
     basic=emp['salary_cents']
-    breakdown={'components':components,'overtime_cents':overtime,'late_cents':late,'unpaid_leave_cents':leave_deduction,'working_days':s['working_days'],'overtime_multiplier':s['overtime_multiplier']}
+    breakdown={'components':components,'overtime_cents':overtime,'late_cents':late,'unpaid_leave_cents':leave_deduction,'unauthorized_absences':unauthorized_absences,'absence_deduction_days':absence_days,'absence_deduction_cents':absence_deduction,'working_days':s['working_days'],'overtime_multiplier':s['overtime_multiplier']}
     require(basic+adds>=deductions,'Deductions exceed gross salary; review adjustments.',400)
     return dict(employee_id=eid,month=month,basic_cents=basic,additions_cents=adds,deductions_cents=deductions,gross_cents=basic+adds,net_cents=basic+adds-deductions,breakdown=json.dumps(breakdown))
 
 def payroll_action(db,u,p):
-    require(u['role'] in ('hr','admin'))
+    require(u['role']=='hr')
     month=str(p.get('month',''))
     if p.get('action')=='simulate': return simulate_payroll(db,int(p['employee_id']),month)
     if p.get('action')=='process':
         count=0
-        for e in rows(db,"SELECT e.id FROM employees e LEFT JOIN users u ON u.employee_id=e.id WHERE e.status IN ('Active','Onboarding','Notice') AND COALESCE(u.role,'employee')!='owner'"):
+        for e in rows(db,"SELECT e.id FROM employees e LEFT JOIN users u ON u.employee_id=e.id WHERE e.status IN ('Active','Onboarding','Notice') AND COALESCE(u.role,'employee') NOT IN ('owner','admin')"):
             old=one(db,'SELECT * FROM payroll WHERE employee_id=? AND month=?',(e['id'],month))
             if old and old['status']=='Approved': continue
             v=simulate_payroll(db,e['id'],month)
@@ -415,25 +538,44 @@ def payroll_action(db,u,p):
 
 def lookups(db,u):
     ids=scope_ids(db,u)
-    # A name-only directory supports recognition without exposing private employee fields.
-    return {'departments':rows(db,'SELECT * FROM departments'),'positions':rows(db,'SELECT * FROM positions'),'teams':rows(db,'SELECT * FROM teams'),'employees':[dict(id=r['id'],name=r['name']) for r in rows(db,'SELECT id,name FROM employees')], 'scoped_employees':[dict(id=r['id'],name=r['name']) for r in rows(db,'SELECT id,name FROM employees') if r['id'] in ids], 'leave_types':rows(db,'SELECT * FROM leave_types'),'courses':rows(db,'SELECT * FROM courses'),'periods':rows(db,'SELECT * FROM performance_periods'),'case_handlers':rows(db,"SELECT u.id,e.name FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.role='hr'") if u['role'] in ('hr','admin') else []}
+    if u['role']=='admin':return {'roles':rows(db,'SELECT id,label FROM roles')}
+    visible=set(ids)
+    from .business import project_ids, allowed_module
+    project_scope=project_ids(db,u)
+    visible.update(r['employee_id'] for r in rows(db,'SELECT employee_id,project_id FROM project_members') if r['project_id'] in project_scope)
+    visible.update(r['manager_id'] for r in rows(db,'SELECT id,manager_id FROM projects') if r['id'] in project_scope and r['manager_id'])
+    visible.update(r['owner_id'] for r in rows(db,'SELECT owner_id,project_id FROM project_risks') if r['project_id'] in project_scope and r['owner_id'])
+    if allowed_module(db,u,'leads'):
+        sales_people={r['employee_id'] for r in rows(db,"SELECT employee_id FROM users WHERE role IN ('sales','sales_leader','sales_manager')")}
+        visible.update(sales_people if u['role'] in ('owner','hr') else sales_people & set(ids))
+    if allowed_module(db,u,'projects'):
+        if u['role']=='owner':
+            # Owners can staff projects; only the minimal assignment identity is
+            # exposed here. Employee records remain behind the HR API boundary.
+            visible.update(r['id'] for r in rows(db,"SELECT id FROM employees WHERE status!='Archived'"))
+    directory=[dict(id=r['id'],name=r['name']) for r in rows(db,'SELECT id,name FROM employees ORDER BY name') if r['id'] in visible]
+    return {'departments':rows(db,'SELECT id,name FROM departments'),'positions':rows(db,'SELECT id,title FROM positions'),'teams':rows(db,'SELECT id,name,department_id,leader_id,manager_id FROM teams'),'employees':directory, 'scoped_employees':[r for r in directory if r['id'] in ids], 'leave_types':rows(db,'SELECT * FROM leave_types'),'courses':rows(db,'SELECT * FROM courses'),'periods':rows(db,'SELECT * FROM performance_periods'),'seniorities':rows(db,'SELECT * FROM seniorities'),'case_handlers':rows(db,"SELECT u.id,e.name FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.role='hr'") if u['role']=='hr' else []}
 
 def dashboard(db,u):
+    if u['role']=='admin':return {'system_admin':True}
     ids=scope_ids(db,u)
-    aggregate=u['role'] in ('hr','owner')
+    aggregate=u['role']=='hr'
     emps=rows(db,'SELECT id,department_id,status,joined,salary_cents FROM employees')
     scoped=emps if aggregate else [r for r in emps if r['id'] in ids]
     sids={r['id'] for r in scoped}
     active=[e for e in scoped if e['status']!='Archived']
-    today=date.today().isoformat()
-    att=[r for r in rows(db,'SELECT * FROM attendance') if r['employee_id'] in sids]
+    today=company_today(db).isoformat()
+    non_attendance_ids={r['employee_id'] for r in rows(db,"SELECT employee_id FROM users WHERE role IN ('owner','admin')")}
+    att=[r for r in rows(db,'SELECT * FROM attendance') if r['employee_id'] in sids and r['employee_id'] not in non_attendance_ids]
     today_att=[r for r in att if r['day']==today and r['check_in']]
     leaves=[r for r in rows(db,'SELECT * FROM leave_requests') if r['employee_id'] in sids]
-    tasks=[r for r in rows(db,'SELECT * FROM tasks') if r['employee_id'] in sids]
+    tasks=list_resource(db,u,'tasks')
     plans=[r for r in rows(db,'SELECT * FROM learning_plans') if r['employee_id'] in sids]
     kpis=[r for r in rows(db,'SELECT * FROM kpis') if r['employee_id'] in sids]
-    weight=sum(k['weight'] for k in kpis)
-    score=round(sum(min(1,k['actual']/k['target'] if k['direction']=='higher' else k['target']/max(k['actual'],.001)) * k['weight'] for k in kpis)/weight*100) if weight else 0
+    current_period=one(db,'SELECT id FROM performance_periods WHERE start<=? AND end>=? ORDER BY start DESC LIMIT 1',(today,today))
+    current_kpis=[k for k in kpis if current_period and k['period_id']==current_period['id'] and k['status']=='Approved']
+    weight=sum(k['weight'] for k in current_kpis)
+    score=round(sum(min(1,k['actual']/k['target'] if k['direction']=='higher' else k['target']/max(k['actual'],.001)) * k['weight'] for k in current_kpis)/weight*100) if weight else 0
     dep=[]
     for d in rows(db,'SELECT * FROM departments'):
         members=[e for e in active if e['department_id']==d['id']]
@@ -444,16 +586,16 @@ def dashboard(db,u):
         dep.append(dict(name=d['name'],employees=len(members),hours=effort,capacity=capacity,utilization=round(100*effort/capacity) if capacity else 0))
     trend=[]
     for n in range(6,-1,-1):
-        day=(date.today()-timedelta(days=n)).isoformat()
-        trend.append(dict(day=day,present=sum(r['day']==day and bool(r['check_in']) for r in att),late=sum(r['day']==day and r['late_minutes']>0 for r in att)))
-    ensure_balance(db,u['employee_id'],date.today().year)
-    balance=one(db,'SELECT * FROM leave_balances WHERE employee_id=? AND year=?',(u['employee_id'],date.today().year))
-    contracts=[c for c in rows(db,'SELECT * FROM contracts') if c['employee_id'] in sids and (c['end']<= (date.today()+timedelta(days=30)).isoformat() or today<=c['probation_end']<=(date.today()+timedelta(days=30)).isoformat())]
+        day=(company_today(db)-timedelta(days=n)).isoformat()
+        trend.append(dict(day=day,present=sum(r['day']==day and bool(r['check_in']) for r in att),late=sum(r.get('classification')=='Late' for r in att if r['day']==day)))
+    ensure_balance(db,u['employee_id'],company_today(db).year)
+    balance=one(db,'SELECT * FROM leave_balances WHERE employee_id=? AND year=?',(u['employee_id'],company_today(db).year))
+    contracts=[c for c in rows(db,'SELECT * FROM contracts') if c['employee_id'] in sids and (c['end']<= (company_today(db)+timedelta(days=30)).isoformat() or today<=c['probation_end']<=(company_today(db)+timedelta(days=30)).isoformat())]
     resignations=[r for r in rows(db,'SELECT * FROM resignations') if r['employee_id'] in sids]
     archived=sum(e['status']=='Archived' for e in scoped)
     candidates=rows(db,'SELECT stage,COUNT(*) AS count FROM candidates GROUP BY stage') if aggregate else []
     payroll_total=sum(e['salary_cents'] for e in active) if aggregate else None
-    result=dict(total_employees=len(active),present=len(today_att),pending=sum(r['status']=='Pending' for r in leaves),performance=score,leave_balance=balance['entitlement']-balance['used'],today=one(db,'SELECT * FROM attendance WHERE employee_id=? AND day=?',(u['employee_id'],today)),tasks_total=len(tasks),tasks_done=sum(t['status']=='Done' for t in tasks),overdue=sum(t['status']!='Done' and t['due']<today for t in tasks),learning_progress=round(sum(p['progress'] for p in plans)/len(plans)) if plans else 0,departments=dep,attendance_trend=trend,contract_alerts=contracts,recruitment=candidates,payroll_total_cents=payroll_total,turnover_percent=round(100*archived/len(scoped),1) if scoped else 0,resignations=len(resignations),retention_reasons=[r['reason'] for r in resignations] if u['role'] in ('hr','admin') else [],announcements=list_resource(db,u,'announcements')[:5],notifications=rows(db,'SELECT * FROM notifications WHERE employee_id=? ORDER BY id DESC LIMIT 20',(u['employee_id'],)),tasks=sorted(tasks,key=lambda t:t['due'])[:6],recognition=list_resource(db,u,'recognition')[:4])
+    result=dict(total_employees=len(active),present=len(today_att),pending=sum(r['status']=='Pending' for r in leaves),performance=score,leave_balance=balance['entitlement']-balance['used'],today=one(db,'SELECT * FROM attendance WHERE employee_id=? AND day=?',(u['employee_id'],today)),tasks_total=len(tasks),tasks_done=sum(t['status'] in ('Done','Completed','Approved') for t in tasks),overdue=sum(t['deadline_status']=='Overdue' for t in tasks),learning_progress=round(sum(p['progress'] for p in plans)/len(plans)) if plans else 0,departments=dep,attendance_trend=trend,contract_alerts=contracts,recruitment=candidates,payroll_total_cents=payroll_total,turnover_percent=round(100*archived/len(scoped),1) if scoped else 0,resignations=len(resignations),retention_reasons=[r['reason'] for r in resignations] if u['role']=='hr' else [],announcements=list_resource(db,u,'announcements')[:5],notifications=rows(db,'SELECT * FROM notifications WHERE employee_id=? ORDER BY id DESC LIMIT 20',(u['employee_id'],)),tasks=sorted(tasks,key=lambda t:t['due'])[:6],recognition=list_resource(db,u,'recognition')[:4])
     result['contract_alert_count']=len(contracts)
     if u['role']=='owner':
         result['contract_alerts']=[]
@@ -461,5 +603,5 @@ def dashboard(db,u):
     if aggregate:
         result['payroll_status']=rows(db,'SELECT month,status,COUNT(*) AS count,SUM(net_cents) AS total_cents FROM payroll GROUP BY month,status ORDER BY month DESC LIMIT 8')
     else: result['payroll_status']=[]
-    result['next_training']=one(db,"SELECT l.session_at,c.title FROM learning_plans l JOIN courses c ON c.id=l.course_id WHERE l.employee_id=? AND l.progress<100 AND l.session_at>=? ORDER BY l.session_at LIMIT 1",(u['employee_id'],datetime.now().isoformat()))
+    result['next_training']=one(db,"SELECT l.session_at,c.title FROM learning_plans l JOIN courses c ON c.id=l.course_id WHERE l.employee_id=? AND l.progress<100 AND l.session_at>=? ORDER BY l.session_at LIMIT 1",(u['employee_id'],company_now(db).isoformat()))
     return result

@@ -2,16 +2,20 @@
 import http.cookiejar
 import json
 import sys
+import tempfile
 import threading
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
+import backend.db as database
 from backend.db import initialize
 from backend.server import Handler
 
-initialize()
+temporary=tempfile.TemporaryDirectory(prefix='northstar-smoke-')
+database.DB_PATH=Path(temporary.name)/'smoke.sqlite3'
+initialize(database.DB_PATH,demo=True)
 server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
 thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
 base=f'http://127.0.0.1:{server.server_port}'
@@ -21,9 +25,12 @@ try:
     for account in ('owner','hr','manager','leader','nora'):
         req=urllib.request.Request(base+'/api/login',data=json.dumps({'email':account+'@demo.local','password':'Demo2026!'}).encode(),headers={'Content-Type':'application/json'})
         with client.open(req) as response:assert json.loads(response.read())['email']==account+'@demo.local'
-        with client.open(base+'/api/dashboard') as response:assert json.loads(response.read())['total_employees']>=1
+        with client.open(base+'/api/dashboard') as response:
+            dashboard=json.loads(response.read())
+            assert ('total_employees' not in dashboard) if account=='owner' else dashboard['total_employees']>=1
         req=urllib.request.Request(base+'/api/logout',data=b'{}',headers={'Content-Type':'application/json'})
         with client.open(req) as response:assert response.status==200
     print('Packaged-source HTTP smoke: static assets and five-role login/dashboard/logout passed.')
 finally:
     server.shutdown();server.server_close();thread.join()
+    temporary.cleanup()

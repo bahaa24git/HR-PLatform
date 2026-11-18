@@ -32,7 +32,7 @@ def render_pdf(content, ident, company, options=None):
     wide = any(s['type'] == 'table' and len(s['columns']) > 5 for s in report['sections'])
     page_size = landscape(A4) if orientation == 'landscape' or orientation == 'auto' and wide else A4
     width = page_size[0] - 84
-    font_path = next((p for p in [Path(os.getenv('PDF_FONT_PATH', '')), Path('C:/Windows/Fonts/tahoma.ttf'), Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')] if p.is_file()), None)
+    font_path = next((p for p in [Path(os.getenv('PDF_FONT_PATH', '')), Path('C:/Windows/Fonts/tahoma.ttf'), Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'), Path('/System/Library/Fonts/Supplemental/Arial Unicode.ttf')] if p.is_file()), None)
     require(font_path is not None, 'Set PDF_FONT_PATH to an Arabic-capable TrueType font.', 503)
     if 'NorthstarReport' not in pdfmetrics.getRegisteredFontNames():
         pdfmetrics.registerFont(TTFont('NorthstarReport', str(font_path)))

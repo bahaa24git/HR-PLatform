@@ -3,29 +3,30 @@ import calendar
 import json
 from datetime import date, timedelta
 from .db import rows, one, insert
-from .service import require, Problem, scope_ids, settings, check_employee, list_resource
+from .service import require, Problem, scope_ids, settings, check_employee, list_resource, company_today
 
 def attendance_report(db,u):
     ids=scope_ids(db,u)
     s=settings(db)
-    data=[r for r in rows(db,'SELECT * FROM attendance ORDER BY day DESC') if r['employee_id'] in ids]
+    non_attendance_ids={r['employee_id'] for r in rows(db,"SELECT employee_id FROM users WHERE role IN ('owner','admin')")}
+    data=[r for r in rows(db,'SELECT * FROM attendance ORDER BY day DESC') if r['employee_id'] in ids and r['employee_id'] not in non_attendance_ids]
     seen={(r['employee_id'],r['day']) for r in data}
-    employees=[e for e in rows(db,"SELECT id,joined,work_mode,status FROM employees WHERE status!='Archived'") if e['id'] in ids]
+    employees=[e for e in rows(db,"SELECT id,joined,work_mode,status FROM employees WHERE status!='Archived'") if e['id'] in ids and e['id'] not in non_attendance_ids]
     synthetic=-1
     # Missing attendance on completed scheduled days is a review indicator only,
     # never an automatically imposed payroll deduction.
     for n in range(1,31):
-        day=date.today()-timedelta(days=n)
+        day=company_today(db)-timedelta(days=n)
         if day.weekday() not in s['workdays']: continue
         for emp in employees:
             if emp['joined']>day.isoformat() or (emp['id'],day.isoformat()) in seen: continue
             approved=one(db,"SELECT l.id FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE employee_id=? AND status='Approved' AND start<=? AND end>=? AND t.unit='days'",(emp['id'],day.isoformat(),day.isoformat()))
             if approved: continue
-            data.append(dict(id=synthetic,employee_id=emp['id'],day=day.isoformat(),check_in=None,check_out=None,minutes=0,late_minutes=0,early_minutes=0,overtime_minutes=0,work_mode=emp['work_mode'],exception='Missing attendance — review required'))
+            data.append(dict(id=synthetic,employee_id=emp['id'],day=day.isoformat(),check_in=None,check_out=None,minutes=0,late_minutes=0,early_minutes=0,overtime_minutes=0,work_mode=emp['work_mode'],exception='Missing attendance — review required',classification='Unclassified',review_status='Not required'))
             synthetic-=1
     indicators=[]
     for emp in employees:
-        recent=[r for r in data if r['employee_id']==emp['id'] and r['day']>=(date.today()-timedelta(days=30)).isoformat()]
+        recent=[r for r in data if r['employee_id']==emp['id'] and r['day']>=(company_today(db)-timedelta(days=30)).isoformat()]
         indicators.append(dict(employee_id=emp['id'],late_days=sum(r['late_minutes']>0 for r in recent),absence_indicators=sum(r['id']<0 for r in recent),early_days=sum(r['early_minutes']>0 for r in recent),overtime_hours=round(sum(r['overtime_minutes'] for r in recent)/60,2)))
     return {'records':sorted(data,key=lambda r:r['day'],reverse=True),'indicators':indicators}
 
@@ -35,7 +36,7 @@ def workforce(db,u):
     people=[p for p in rows(db,'SELECT * FROM employees') if p['id'] in ids]
     resignations=[r for r in rows(db,'SELECT * FROM resignations') if r['employee_id'] in ids]
     periods=[]
-    now=date.today()
+    now=company_today(db)
     for n in range(5,-1,-1):
         idx=now.year*12+now.month-1-n
         year,month=divmod(idx,12);month+=1
@@ -68,9 +69,10 @@ def performance_insights(db,u):
     summary=[]
     for p in periods:
         relevant=[k for k in kpis if k['period_id']==p['id']]
-        total=sum(k['weight'] for k in relevant)
-        score=round(sum(min(1,k['actual']/k['target'] if k['direction']=='higher' else k['target']/max(k['actual'],.001))*k['weight'] for k in relevant)/total*100,1) if total else None
-        summary.append(dict(period=p['name'],score=score,objectives=len(relevant)))
+        approved=[k for k in relevant if k['status']=='Approved']
+        total=sum(k['weight'] for k in approved)
+        score=round(sum(min(1,k['actual']/k['target'] if k['direction']=='higher' else k['target']/max(k['actual'],.001))*k['weight'] for k in approved)/total*100,1) if total else None
+        summary.append(dict(period=p['name'],start=p['start'],end=p['end'],score=score,objectives=len(approved)))
     return {'periods':summary,'report_months':sorted(set(r['month'] for r in reports)), 'notes':[r for r in rows(db,'SELECT * FROM performance_notes ORDER BY id DESC') if r['employee_id'] in scope_ids(db,u)]}
 
 def performance_note(db,u,p):

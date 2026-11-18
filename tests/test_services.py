@@ -54,7 +54,7 @@ class ServicesTest(unittest.TestCase):
             d=dashboard(self.db,u)
             self.assertGreater(d['total_employees'],0)
             self.assertEqual(7,len(d['attendance_trend']))
-        self.assertEqual(12,dashboard(self.db,self.owner)['total_employees'])
+        self.assertEqual(1,dashboard(self.db,self.owner)['total_employees'])
         self.assertEqual(1,len(list_resource(self.db,self.employee,'employees')))
 
     def test_scope_and_salary_privacy(self):
@@ -270,7 +270,8 @@ class ServicesTest(unittest.TestCase):
         with self.assertRaises(Problem): save_settings(self.db,self.owner,{'notice_days':5})
         with self.assertRaises(Problem): save_settings(self.db,self.hr,{'working_days':0})
         with self.assertRaises(Problem): save_settings(self.db,self.hr,{'survey_minimum':1})
-        save_settings(self.db,self.hr,{'notice_days':45,'late_deduction':True})
+        with self.assertRaises(Problem): save_settings(self.db,self.hr,{'late_deduction':True})
+        save_settings(self.db,self.hr,{'notice_days':45})
         self.assertEqual(45,settings(self.db)['notice_days'])
 
 class HTTPTest(unittest.TestCase):
@@ -311,6 +312,17 @@ class HTTPTest(unittest.TestCase):
         self.request('/api/logout','POST',{})
         with self.assertRaises(urllib.error.HTTPError):self.request('/api/bootstrap')
 
+    def test_task_api_rejects_an_unassigned_colleague_task(self):
+        db=connect()
+        try:other=one(db,'SELECT id FROM tasks WHERE employee_id!=6 ORDER BY id LIMIT 1')
+        finally:db.close()
+        self.assertIsNotNone(other)
+        self.request('/api/login','POST',{'email':'nora@demo.local','password':'Demo2026!'})
+        own=self.request('/api/resources/tasks')
+        self.assertTrue(all(task['employee_id']==6 for task in own))
+        with self.assertRaises(urllib.error.HTTPError) as error:self.request(f"/api/tasks/{other['id']}/comments")
+        self.assertEqual(404,error.exception.code)
+
     def test_advisor_history_requires_session_and_ignores_user_id_parameter(self):
         from backend.ai import save_messages
         with self.assertRaises(urllib.error.HTTPError) as error:self.request('/api/ai/history')
@@ -339,7 +351,9 @@ class HTTPTest(unittest.TestCase):
         self.assertTrue(self.request('/api/health')['database'])
         for name in ['owner','hr','manager','leader','leader2','nora']:
             self.request('/api/login','POST',{'email':name+'@demo.local','password':'Demo2026!'})
-            self.assertTrue(self.request('/api/dashboard')['total_employees'])
+            dashboard=self.request('/api/dashboard')
+            if name=='owner':self.assertNotIn('total_employees',dashboard)
+            else:self.assertTrue(dashboard['total_employees'])
             self.request('/api/logout','POST',{})
         with self.assertRaises(urllib.error.HTTPError): self.client.open(self.base+'/.env')
         with self.assertRaises(urllib.error.HTTPError): self.client.open(self.base+'/data/hr.sqlite3')

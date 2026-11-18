@@ -17,7 +17,7 @@ def before_create(db,u,table,p):
     owner_guard(u,table)
     if table=='kpis':
         require(assigned_leader(db,u,p.get('employee_id',u['employee_id'])),'Only the assigned team leader can create employee KPIs. HR configures the framework separately.')
-    if table=='learning_plans':require(u['role'] in ('hr','admin') or assigned_leader(db,u,p.get('employee_id',0)),'Only HR or the assigned team leader can assign development plans.')
+    if table=='learning_plans':require(u['role']=='hr' or assigned_leader(db,u,p.get('employee_id',0)),'Only HR or the assigned team leader can assign development plans.')
     if table=='tasks':
         require(u['role'] in MANAGERS+['hr'],'Task assignment requires a management role.')
         validate_task(db,u,p)
@@ -50,8 +50,8 @@ def before_update(db,u,table,ident,p):
         if p.get('status') in ('Done','Completed','Approved'):
             pending=one(db,"SELECT COUNT(*) AS n FROM task_dependencies d JOIN tasks t ON t.id=d.depends_on_id WHERE task_id=? AND t.status NOT IN ('Done','Completed','Approved')",(ident,))['n']
             require(not pending,'Complete blocking dependencies before closing this task.',409)
-        if 'quality_score' in p:require(assigned_leader(db,u,r['employee_id']) or u['role'] in ('project_manager','admin'))
-        if p.get('status')=='Approved':require(assigned_leader(db,u,r['employee_id']) or u['role'] in ('project_manager','admin'),'Only an authorized reviewer may approve task quality.')
+        if 'quality_score' in p:require(assigned_leader(db,u,r['employee_id']) or u['role']=='project_manager')
+        if p.get('status')=='Approved':require(assigned_leader(db,u,r['employee_id']) or u['role']=='project_manager','Only an authorized reviewer may approve task quality.')
     if table=='employees' and 'salary_cents' in p and int(p['salary_cents'])!=r['salary_cents']:
         require(str(p.get('justification','')).strip(),'Salary changes require a documented reason.',400)
     return r
@@ -73,7 +73,7 @@ def after_update(db,u,table,ident,p,before):
 
 def discussion(db,u,method,p):
     eid=int(p.get('employee_id',u['employee_id']))
-    require(eid==u['employee_id'] or assigned_leader(db,u,eid) or u['role'] in ('hr','admin'),'This discussion is outside your scope.')
+    require(eid==u['employee_id'] or assigned_leader(db,u,eid) or u['role']=='hr','This discussion is outside your scope.')
     if method=='GET':return rows(db,'SELECT d.*,e.name AS author FROM review_discussions d JOIN employees e ON e.id=d.author_id WHERE d.employee_id=? ORDER BY d.id',(eid,))
     comment=str(p.get('comment','')).strip();require(1<=len(comment)<=5000,'Enter a comment up to 5,000 characters.',400)
     parent=int(p['parent_id']) if p.get('parent_id') else None
@@ -89,11 +89,11 @@ def discussion(db,u,method,p):
     return {'id':ident,'message':'Reply added to the permanent discussion history.'}
 
 def termination(db,u,method,p):
-    require(u['role'] in ('owner','hr','admin'))
+    require(u['role'] in ('owner','hr'))
     if method=='GET':return rows(db,'SELECT t.*,e.name AS employee FROM termination_requests t JOIN employees e ON e.id=t.employee_id ORDER BY t.id DESC')
     action=p.get('action','initiate')
     if action=='initiate':
-        require(u['role'] in ('owner','admin'))
+        require(u['role']=='owner')
         eid=int(p.get('employee_id',0));require(one(db,"SELECT id FROM employees WHERE id=? AND status!='Archived'",(eid,)),'Choose an active employee.',400)
         require(not one(db,"SELECT id FROM termination_requests WHERE employee_id=? AND status NOT IN ('Rejected','Completed')",(eid,)),'An active termination proposal already exists for this employee.',409)
         for key in ('reason','supporting_document','notice_date','proposed_end'):require(str(p.get(key,'')).strip(),key+' is required.',400)
@@ -105,16 +105,16 @@ def termination(db,u,method,p):
         return {'id':ident,'message':'Proposal recorded. No employment status or access has changed.'}
     r=one(db,'SELECT * FROM termination_requests WHERE id=?',(int(p.get('id',0)),));require(r is not None,'Proposal not found.',404)
     if action=='hr_review':
-        require(u['role'] in ('hr','admin'));require(r['status']=='Pending HR review','Proposal is not pending HR review.',409)
+        require(u['role']=='hr');require(r['status']=='Pending HR review','Proposal is not pending HR review.',409)
         require(p.get('hr_review') and p.get('legal_review'),'Document both HR review and applicable legal/contractual assessment.',400)
         db.execute("UPDATE termination_requests SET status='Pending owner approval',hr_review=?,legal_review=? WHERE id=?",(p['hr_review'],p['legal_review'],r['id']))
     elif action=='approve':
-        require(u['role'] in ('owner','admin'));require(r['status']=='Pending owner approval' and p.get('confirmed') is True,'HR review and explicit confirmation are required.',409)
+        require(u['role']=='owner');require(r['status']=='Pending owner approval' and p.get('confirmed') is True,'HR review and explicit confirmation are required.',409)
         db.execute("UPDATE termination_requests SET status='Approved for offboarding',approved_by=? WHERE id=?",(u['id'],r['id']))
         for title in ['Verify required notices and supporting documents','Complete handover','Return company assets','Review final settlement','Document access closure']:
             insert(db,'checklists',dict(employee_id=r['employee_id'],kind='Offboarding',title=title,due=r['proposed_end']))
     elif action=='complete':
-        require(u['role'] in ('hr','admin'));require(r['status']=='Approved for offboarding','Approval is required.',409)
+        require(u['role']=='hr');require(r['status']=='Approved for offboarding','Approval is required.',409)
         require(not one(db,"SELECT id FROM checklists WHERE employee_id=? AND kind='Offboarding' AND done=0",(r['employee_id'],)),'Complete the documented offboarding checklist.',409)
         require(p.get('settlement') and p.get('access_closed') is True,'Record settlement review and explicit access closure.',400)
         db.execute("UPDATE termination_requests SET status='Completed',settlement=?,access_closed=1 WHERE id=?",(p['settlement'],r['id']))

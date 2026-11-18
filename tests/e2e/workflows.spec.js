@@ -53,6 +53,28 @@ test('employee permissions, team-first task assignment and KPI change protection
  await login(page,'nora@demo.local');await nav(page,'kpis');await expect(page.locator('[data-action="h-edit"]')).toHaveCount(0);await nav(page,'learning_plans');await expect(page.locator('[data-action="h-edit"]')).toHaveCount(0);await page.locator('[data-action="logout"]').click();await login(page,'leader@demo.local');await nav(page,'tasks');await page.getByRole('button',{name:'Add new',exact:true}).click();await expect(page.locator('#field-employee_id')).toBeDisabled();await page.locator('#field-team_id').selectOption({label:'Sales Horizon'});await expect(page.locator('#field-employee_id option')).toHaveCount(2);await expect(page.locator('#field-employee_id')).toContainText('QA Horizon Leader');await expect(page.locator('#field-complexity option')).toHaveCount(6);await page.locator('.modal-actions [data-action="close"]').click();
  await nav(page,'kpis');const row=page.locator('tbody tr').filter({hasText:'Nora Khalil'}).first();await row.getByRole('button',{name:'Edit',exact:true}).click();await fill(page,'target',500);await expect(page.locator('.change-warning')).toContainText('Significant KPI change');await expect(page.locator('#field-justification')).toHaveAttribute('required','');await fill(page,'justification','Fictional documented target scope review.');await page.locator('#field-confirmed').check();await submit(page);
 });
+test('employee direct URLs and API requests cannot open HR-only records',async({page})=>{
+ await login(page,'nora@demo.local');await page.goto('/#jobs');await expect(page.locator('#breadcrumb-page')).toHaveText('Overview');await expect(page.locator('.sidebar [data-page="jobs"]')).toHaveCount(0);
+ await expect(page.locator('.sidebar [data-page="campaigns"]')).toHaveCount(0);await page.goto('/#campaigns');await expect(page.locator('#breadcrumb-page')).toHaveText('Overview');
+ const people=await page.request.get('/api/resources/employees');expect(people.ok()).toBeTruthy();expect(await people.json()).toHaveLength(1);
+ const jobs=await page.request.get('/api/resources/jobs');expect(jobs.status()).toBe(403);
+ expect((await page.request.get('/api/business/campaigns')).status()).toBe(403);
+});
+test('system admin and sales leader navigation matches API permissions',async({page})=>{
+ await login(page,'system.admin@demo.local');
+ await expect(page.locator('.sidebar [data-page="payroll"]')).toHaveCount(0);
+ await expect(page.locator('.sidebar [data-page="employees"]')).toHaveCount(0);
+ await expect(page.locator('.sidebar [data-page="projects"]')).toHaveCount(0);
+ await page.goto('/#payroll');await expect(page.locator('#breadcrumb-page')).toHaveText('Overview');
+ const boot=await page.request.get('/api/bootstrap');expect(boot.ok()).toBeTruthy();const data=await boot.json();expect(data.allowed_pages).toEqual(['dashboard','users']);expect(data.catalog).toEqual({});expect(data.business_catalog).toEqual({});expect(data.lookups.employees).toBeUndefined();
+ expect((await page.request.get('/api/resources/employees')).status()).toBe(403);
+ expect((await page.request.get('/api/business/projects')).status()).toBe(403);
+ expect((await page.request.get('/api/settings')).status()).toBe(403);
+ await page.locator('[data-action="logout"]').click();await login(page,'leader.atlas@demo.local');
+ await expect(page.locator('.sidebar [data-page="jobs"]')).toHaveCount(0);
+ await page.goto('/#jobs');await expect(page.locator('#breadcrumb-page')).toHaveText('Overview');
+ expect((await page.request.get('/api/resources/jobs')).status()).toBe(403);
+});
 test('monthly reports are role-specific and export real PDFs',async({page})=>{
  await login(page,'nora@demo.local');await nav(page,'reports');await page.getByRole('button',{name:'Add new',exact:true}).click();await fill(page,'month','2026-10');await fill(page,'accomplishments','Delivered brand assets and documented the revisions.');await expect(page.locator('#field-answer_0')).toBeVisible();for(const el of await page.locator('[id^="field-answer_"]').all())await el.fill('Fictional design evidence with project context.');await submit(page);await page.locator('tbody tr').filter({hasText:'2026-10'}).getByRole('button',{name:'View',exact:true}).click();const href=await page.locator('.modal a[href^="/api/exports/reports/"]').getAttribute('href');const response=await page.request.get(href);expect(response.status()).toBe(200);expect((await response.body()).subarray(0,4).toString()).toBe('%PDF');await expect(page.locator('.modal-body')).not.toContainText('"role_data"');
 });
