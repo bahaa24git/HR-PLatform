@@ -16,7 +16,7 @@ from backend.ai import ask
 class ExtendedTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp=tempfile.TemporaryDirectory();cls.path=Path(cls.tmp.name)/'seed.sqlite3';initialize(cls.path)
+        cls.tmp=tempfile.TemporaryDirectory();cls.path=Path(cls.tmp.name)/'seed.sqlite3';initialize(cls.path,demo=True)
     @classmethod
     def tearDownClass(cls): cls.tmp.cleanup()
     def setUp(self):
@@ -25,7 +25,7 @@ class ExtendedTest(unittest.TestCase):
         self.hr=next(u for u in users if u['role']=='hr');self.nora=next(u for u in users if u['employee_id']==6);self.owner=next(u for u in users if u['role']=='owner');self.leader=next(u for u in users if u['employee_id']==4)
     def tearDown(self): self.db.close()
     def test_migrations_role_specific_templates_and_notes(self):
-        self.assertEqual(list(range(1,12)),[r['version'] for r in rows(self.db,'SELECT * FROM schema_versions')])
+        self.assertEqual(list(range(1,15)),[r['version'] for r in rows(self.db,'SELECT * FROM schema_versions')])
         self.assertGreaterEqual(len(rows(self.db,'SELECT * FROM kpi_templates')),15)
         apply_templates(self.db,self.leader,{'employee_id':6})
         self.assertEqual(9,one(self.db,'SELECT COUNT(*) AS n FROM kpis WHERE employee_id=6')['n'])
@@ -44,7 +44,7 @@ class ExtendedTest(unittest.TestCase):
         self.db.execute('DELETE FROM attendance WHERE employee_id=6')
         report=attendance_report(self.db,self.nora)
         self.assertTrue(report['records']);self.assertTrue(all(r['employee_id']==6 for r in report['records']))
-        self.assertGreater(report['indicators'][0]['absence_indicators'],0)
+        self.assertGreater(report['indicators'][0]['missing_punches'],0)
         result=simulate_payroll(self.db,6,date.today().strftime('%Y-%m'))
         self.assertEqual(0,result['deductions_cents'])
     def test_workforce_analytics_and_owner_detail_boundary(self):

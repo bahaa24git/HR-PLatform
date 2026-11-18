@@ -3,6 +3,8 @@ def f(name, label, kind='text', required=True, options=None):
     return dict(name=name,label=label,type=kind,required=required,options=options)
 
 CATALOG = {
+ 'career_paths':dict(label='Career paths',icon='chart',public=True,manage=['hr'],fields=[f('from_position_id','Current position','position'),f('to_position_id','Next position','position'),f('required_skills','Required skills','list'),f('minimum_proficiency','Required proficiency (0–100)','number'),f('minimum_months','Minimum tenure (months)','number'),f('notes','Development guidance','textarea',False)]),
+ 'holidays': dict(label='Holiday calendar',icon='calendar',public=True,manage=['hr'],fields=[f('name','Holiday name'),f('day','Date','date'),f('paid','Paid holiday','checkbox',False)]),
  'positions': dict(label='Job positions',icon='briefcase',public=True,manage=['hr'],fields=[f('title','Job title'),f('required_skills','Required skills (comma separated)','list')]),
  'kpi_templates': dict(label='KPI library',icon='chart',public=True,manage=['hr'],fields=[f('position_id','Job position','position'),f('title','Objective / KPI'),f('target','Target','number'),f('weight','Weight','number'),f('direction','Scoring direction','select',True,['higher','lower'])]),
  'employee_skills': dict(label='Skill assessments',icon='book',employee=True,manage=['hr','leader','manager'],fields=[f('employee_id','Employee','employee'),f('name','Skill'),f('proficiency','Proficiency (0–100)','number'),f('assessed_at','Assessment date','date')]),

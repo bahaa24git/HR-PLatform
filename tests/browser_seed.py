@@ -22,6 +22,8 @@ for team in ('Atlas','Horizon'):
 person('project.manager@demo.local','QA Project Manager','project_manager',2,2)
 person('accounting@demo.local','QA Accountant','accountant',None,one(db,"SELECT id FROM departments WHERE name='Accounting'")['id'])
 person('system.admin@demo.local','QA System Administrator','admin',None,one(db,"SELECT id FROM departments WHERE name='Operations'")['id'])
+person('executive@demo.local','QA Executive','executive',None,one(db,"SELECT id FROM departments WHERE name='Operations'")['id'])
+person('ordinary.employee@demo.local','QA Ordinary Employee','employee',None,one(db,"SELECT id FROM departments WHERE name='Operations'")['id'])
 from backend.ai import save_messages
 for email,label in [('nora@demo.local','Nora'),('hr@demo.local','HR')]:
     user=one(db,'SELECT u.*,e.department_id FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.email=?',(email,))

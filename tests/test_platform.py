@@ -16,7 +16,7 @@ from backend.reporting import export_pdf
 class CompanyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp=tempfile.TemporaryDirectory();cls.path=Path(cls.tmp.name)/'seed.sqlite3';initialize(cls.path)
+        cls.tmp=tempfile.TemporaryDirectory();cls.path=Path(cls.tmp.name)/'seed.sqlite3';initialize(cls.path,demo=True)
     @classmethod
     def tearDownClass(cls):cls.tmp.cleanup()
     def setUp(self):
@@ -156,8 +156,9 @@ class CompanyTest(unittest.TestCase):
                 self.assertIn('General knowledge',extracted)
             with self.assertRaises(Problem):report_content(self.db,self.hr,result['report_id'])
             self.db.execute("UPDATE employees SET name=name || ' updated' WHERE id=?",(self.nora['employee_id'],))
-            # A changed evidence scope invalidates the old report.
-            with self.assertRaises(Problem) as stale:report_content(self.db,self.nora,result['report_id'])
+            self.assertIn('General knowledge',report_content(self.db,self.nora,result['report_id'])['answer'])
+            # Snapshot content survives edits, but a changed permission scope cannot reuse it.
+            with self.assertRaises(Problem) as stale:report_content(self.db,{**self.nora,'role':'hr'},result['report_id'])
             self.assertEqual(409,stale.exception.status)
 
     def test_import_validation_rolls_back_all_rows(self):
@@ -217,6 +218,10 @@ class CompanyTest(unittest.TestCase):
         pid=b.create(self.db,self.owner,'projects',payload)['id']
         self.assertEqual(2,len(b.timeline(self.db,self.owner,'projects',pid)['related']['milestones']))
         for status in ('Active','On hold','Completed','Archived'):
+            if status=='Completed':
+                with self.assertRaises(Problem):b.update(self.db,self.pm,'projects',pid,{'status':status})
+                for milestone in b.timeline(self.db,self.pm,'projects',pid)['related']['milestones']:
+                    b.update(self.db,self.pm,'milestones',milestone['id'],{'status':'Completed'})
             b.update(self.db,self.pm,'projects',pid,{'status':status})
         for invalid in ({'deadline':'2026-10-01'},{'budget_cents':-1},{'estimated_hours':float('inf')},{'manager_id':999999}):
             with self.subTest(invalid=invalid),self.assertRaises(Problem):b.update(self.db,self.owner,'projects',pid,invalid)

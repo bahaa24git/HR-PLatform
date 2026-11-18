@@ -28,6 +28,8 @@ def hr_modules(role):
         names -= {'jobs', 'candidates', 'interviews'}
     if role in ('sales', 'accountant', 'project_manager', 'executive'):
         names -= {'employees', 'payroll', 'salary_components', 'contracts', 'checklists', 'resignations'}
+    if role in SALES:
+        names -= {'employees', 'payroll', 'salary_components', 'contracts', 'checklists', 'resignations'}
     return names
 
 
@@ -74,8 +76,8 @@ def business_module(db, user, entity):
     if entity == 'sales_targets':
         return role in OWNER | {'sales_leader', 'sales_manager'}
     if entity in {'accounts', 'contacts', 'activities', 'client_contracts'}:
-        return role in OWNER | SALES | {'project_manager', 'executive'}
-    if entity in {'payments', 'project_costs'}:
+        return role in OWNER | SALES | PROJECT_MANAGERS | {'executive', 'accountant'}
+    if entity in {'payments', 'project_costs','invoices'}:
         return role in OWNER | {'accountant'}
     if entity == 'client_feedback':
         return role in OWNER | SALES | {'project_manager'}
@@ -107,6 +109,6 @@ def allowed_pages(db, user, business_catalog):
         pages.add('users')
     elif role in OWNER | {'sales_manager', 'accountant'}:
         pages.add('audit')
-    if role in OWNER | HR | {'manager', 'leader', 'sales_manager', 'sales_leader'}:
+    if role in OWNER | HR:
         pages.add('terminations')
     return sorted(pages)

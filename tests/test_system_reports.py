@@ -11,7 +11,7 @@ from backend.service import list_resource,Problem
 class SystemReportTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp=tempfile.TemporaryDirectory();cls.path=Path(cls.tmp.name)/'reports.sqlite3';initialize(cls.path)
+        cls.tmp=tempfile.TemporaryDirectory();cls.path=Path(cls.tmp.name)/'reports.sqlite3';initialize(cls.path,demo=True)
 
     @classmethod
     def tearDownClass(cls):cls.tmp.cleanup()

@@ -1,0 +1,2 @@
+CREATE TABLE career_paths(id INTEGER PRIMARY KEY, from_position_id INTEGER NOT NULL REFERENCES positions(id), to_position_id INTEGER NOT NULL REFERENCES positions(id), required_skills TEXT NOT NULL, minimum_proficiency REAL NOT NULL DEFAULT 70 CHECK(minimum_proficiency BETWEEN 0 AND 100), minimum_months INTEGER NOT NULL DEFAULT 0 CHECK(minimum_months>=0), notes TEXT NOT NULL DEFAULT '', CHECK(from_position_id!=to_position_id), UNIQUE(from_position_id,to_position_id));
+INSERT INTO schema_versions(version) VALUES(14);

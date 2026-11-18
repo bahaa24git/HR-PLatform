@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import math
 import re
 import secrets
 from datetime import date, datetime, timedelta
@@ -68,6 +69,7 @@ def cases(db,u,method,p):
     return {'message':'Case updated.'}
 
 def survey(db,u,ident,method,p):
+    require(u['role']!='admin','System administrators do not have employee survey access.')
     r=one(db,'SELECT * FROM surveys WHERE id=?',(ident,))
     require(r is not None,'Survey not found.',404)
     questions=json.loads(r['questions'])
@@ -147,7 +149,8 @@ def upload(db,u,p):
     if suffix=='.png': require(data.startswith(b'\x89PNG'),'Invalid PNG.',400)
     if suffix in ('.jpg','.jpeg'): require(data.startswith(b'\xff\xd8'),'Invalid JPEG.',400)
     key=secrets.token_hex(24)+suffix
-    directory=ROOT/'data'/'uploads'
+    from .storage import directory as storage_directory
+    directory=storage_directory(db,'uploads')
     directory.mkdir(parents=True,exist_ok=True)
     (directory/key).write_bytes(data)
     mimes={'.txt':'text/plain','.pdf':'application/pdf','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg'}
@@ -178,11 +181,14 @@ def upload(db,u,p):
     return {'id':ident,'message':'File stored privately.'+(' CV text and job-related skills extracted.' if extracted else (' PDF text extraction requires optional pypdf; TXT and DOCX extraction work without it.' if cid else ''))}
 
 def documents(db,u):
+    require(u['role']!='admin','System administrators do not have employee document access.')
     ids=scope_ids(db,u)
     return [{k:v for k,v in r.items() if k!='storage_key'} for r in rows(db,'SELECT * FROM documents') if (r['employee_id'] in ids and (u['role']=='hr' or r['employee_id']==u['employee_id'])) or (r['candidate_id'] and u['role']=='hr')]
 
 def save_settings(db,u,p):
     require(u['role']=='hr' and permission(db,u,'settings'))
+    p=dict(p)
+    location_confirmed=p.pop('geofence_confirmed',False) is True
     s=settings(db)
     require(set(p).issubset(s),'Unknown configuration key.',400)
     merged={**s,**p}
@@ -207,8 +213,14 @@ def save_settings(db,u,p):
     require(isinstance(merged['workdays'],list) and all(type(x) is int and 0<=x<=6 for x in merged['workdays']),'Invalid workdays.',400)
     g=merged['geofence']
     require(isinstance(g,dict) and set(g)=={'enabled','apply_remote','latitude','longitude','radius_m'},'Invalid geofence.',400)
+    require(all(type(g[k]) in (int,float) and math.isfinite(g[k]) for k in ('latitude','longitude','radius_m')),'Geofence values must be finite numbers.',400)
     require(type(g['enabled']) is bool and type(g['apply_remote']) is bool and -90<=g['latitude']<=90 and -180<=g['longitude']<=180 and 1<=g['radius_m']<=100000,'Invalid geofence coordinates or radius.',400)
+    if g['enabled']:
+        require((g['latitude'],g['longitude'])!=(0,0),'Confirm the real company location; (0,0) cannot be activated.',400)
+        if g!=s['geofence']:require(location_confirmed,'Explicitly confirm that the company location and radius were verified before enabling geofencing.',409)
     for key,value in p.items(): db.execute('UPDATE settings SET value=? WHERE key=?',(json.dumps(value),key))
+    from .business import audit
+    audit(db,u,'settings',None,'Policies updated',s,p,'Authorized HR policy configuration')
     return {'message':'Policies saved.'}
 
 def provision(db,u,p):

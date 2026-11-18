@@ -43,7 +43,8 @@ def attachment(db,u,method,entity,ident,p):
     require(suffix in ('pdf','txt','docx','png','jpg','jpeg','mp4','csv'),'File format is not supported.',400)
     content=base64.b64decode(p.get('data',''),validate=True);require(0<len(content)<=5*1024*1024,'File must be at most 5 MB.',400)
     if suffix=='pdf':require(content.startswith(b'%PDF'),'Invalid PDF file.',400)
-    key=secrets.token_hex(24)+'.'+suffix;directory=ROOT/'data/business-uploads';directory.mkdir(parents=True,exist_ok=True);(directory/key).write_bytes(content)
+    from .storage import directory as storage_directory
+    key=secrets.token_hex(24)+'.'+suffix;directory=storage_directory(db,'business-uploads');directory.mkdir(parents=True,exist_ok=True);(directory/key).write_bytes(content)
     attachment_id=insert(db,'business_attachments',dict(entity=entity,record_id=ident,name=name,storage_key=key,mime='application/octet-stream',uploaded_by=u['id']))
     b.audit(db,u,entity,ident,'Attachment uploaded',after={'name':name})
     return {'message':'Attachment stored privately.','id':attachment_id}
@@ -95,7 +96,8 @@ def route(db,u,method,path,p,raw_path):
     if len(parts)==2 and parts[0]=='business-attachments' and method=='GET':
         r=one(db,'SELECT * FROM business_attachments WHERE id=?',(int(parts[1]),));require(r is not None,'Attachment not found.',404)
         b.record(db,u,r['entity'],r['record_id'])
-        return (ROOT/'data/business-uploads'/r['storage_key']).read_bytes(),{'Content-Type':'application/octet-stream','Content-Disposition':"attachment; filename*=UTF-8''"+__import__('urllib.parse',fromlist=['quote']).quote(r['name'])}
+        from .storage import uploaded_file
+        return uploaded_file(db,'business-uploads',r['storage_key']).read_bytes(),{'Content-Type':'application/octet-stream','Content-Disposition':"attachment; filename*=UTF-8''"+__import__('urllib.parse',fromlist=['quote']).quote(r['name'])}
     if path=='/api/task-assignees' and method=='GET':return b.task_assignees(db,u,int(query.get('team_id',0))),None
     if path=='/api/discussions':return discussion(db,u,method,query if method=='GET' else p),None
     if len(parts)==3 and parts[0]=='reports' and parts[2]=='revise' and method=='POST':
@@ -117,7 +119,8 @@ def route(db,u,method,path,p,raw_path):
         require(method=='PATCH','Method not allowed.',405)
         ident=int(p.get('id',0));r=one(db,'SELECT id,employee_id,email,role FROM users WHERE id=?',(ident,));require(r is not None,'Account not found.',404)
         role=p.get('role');require(one(db,'SELECT id FROM roles WHERE id=?',(role,)),'Invalid role.',400)
-        if u['role']=='admin':require(role in ('admin','employee'),'System administration cannot grant HR, payroll, owner, or business roles.',403)
+        if u['role']=='admin':
+            require(role in ('admin','employee') and r['role'] in ('admin','employee'),'System administration cannot change privileged HR, owner, or business accounts.',403)
         require(ident!=u['id'] or role==u['role'],'You cannot remove your own administrative access.',409)
         db.execute('UPDATE users SET role=? WHERE id=?',(role,ident));db.execute('DELETE FROM sessions WHERE user_id=?',(ident,))
         b.audit(db,u,'users',ident,'Role changed',r,{'role':role},str(p.get('reason','')))

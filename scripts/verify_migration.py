@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix='northstar-migration-') as tmp:
     for table in tables:
         after = [tuple(row)[:column_counts[table]] for row in db.execute('SELECT * FROM ' + table + ' ORDER BY id')]
         assert before[table] == after, table + ' legacy values changed'
-    assert [row[0] for row in db.execute('SELECT version FROM schema_versions ORDER BY version')] == list(range(1, 12))
+    assert [row[0] for row in db.execute('SELECT version FROM schema_versions ORDER BY version')] == list(range(1, 15))
     assert not db.execute('PRAGMA foreign_key_check').fetchall()
-    print('Migration preservation passed: representative employee, attendance, leave, payroll, contract, task, case, survey and report data retained through versions 5–11; repeated initialization and foreign keys are clean.')
+    print('Migration preservation passed: employee, attendance, leave, payroll, contract, task, case, survey and report data retained through versions 5-14; repeated initialization and foreign keys are clean.')
     db.close()

@@ -209,6 +209,30 @@ def _seed_workforce(db):
     for team_name in ('Sales Atlas','Sales Horizon'):
         db.execute('UPDATE teams SET manager_id=?,leader_id=? WHERE id=?', (sales_manager,sales_leads[team_name],teams[team_name]))
 
+    # Fresh isolated seed only: consolidate obsolete starter aliases into the
+    # staffed operating structure; no working or existing demo is rewritten.
+    aliases={'People & Culture':'Operations','Creative Studio':'Graphic Design','Growth & Marketing':'Media Buying'}
+    tables=[r['name'] for r in rows(db,"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+    for old_name,new_name in aliases.items():
+        old=departments.get(old_name);new=departments[new_name]
+        if not old or old==new:continue
+        for team in rows(db,'SELECT id FROM teams WHERE department_id=?',(old,)):
+            for table in tables:
+                for fk in rows(db,'PRAGMA foreign_key_list('+table+')'):
+                    if fk['table']=='teams':db.execute('UPDATE '+table+' SET '+fk['from']+'=? WHERE '+fk['from']+'=?',(teams[new_name],team['id']))
+            db.execute('DELETE FROM teams WHERE id=?',(team['id'],))
+        for table in tables:
+            for fk in rows(db,'PRAGMA foreign_key_list('+table+')'):
+                if fk['table']=='departments':db.execute('UPDATE '+table+' SET '+fk['from']+'=? WHERE '+fk['from']+'=?',(new,old))
+        db.execute('DELETE FROM departments WHERE id=?',(old,))
+    for empty in rows(db,'SELECT t.id,t.department_id FROM teams t LEFT JOIN employees e ON e.team_id=t.id GROUP BY t.id HAVING COUNT(e.id)=0'):
+        replacement=one(db,'SELECT t.id FROM teams t JOIN employees e ON e.team_id=t.id WHERE t.department_id=? AND t.id!=? ORDER BY t.id LIMIT 1',(empty['department_id'],empty['id']))
+        if replacement:
+            for table in tables:
+                for fk in rows(db,'PRAGMA foreign_key_list('+table+')'):
+                    if fk['table']=='teams':db.execute('UPDATE '+table+' SET '+fk['from']+'=? WHERE '+fk['from']+'=?',(replacement['id'],empty['id']))
+            db.execute('DELETE FROM teams WHERE id=?',(empty['id'],))
+
     # Employment records, scoped onboarding and balances.
     db.execute('DELETE FROM checklists')
     db.execute('DELETE FROM contracts')
@@ -303,8 +327,19 @@ def _historical_hr(db, employees):
         insert(db,'leave_approval_steps',dict(request_id=rid,ordinal=1,approver_id=approver_emp,status=step_status))
         if status in ('Approved','Rejected') and actor:
             insert(db,'approval_history',dict(request_id=rid,actor_id=actor['id'],decision=status,reason='Reviewed against team coverage and leave balance.'))
-        if status=='Approved' and type_name=='Annual leave' and start_day.year==today.year:
+        if status=='Approved' and one(db,'SELECT deduct_balance FROM leave_types WHERE id=?',(type_id,))['deduct_balance'] and start_day.year==today.year:
             db.execute('UPDATE leave_balances SET used=used+? WHERE employee_id=? AND year=?',(units,eid,today.year))
+
+    # Reconcile full-day approved leave before deriving any payroll snapshots.
+    for leave in rows(db,"SELECT l.*,t.name FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE l.status='Approved' AND t.unit='days'"):
+        first=date.fromisoformat(leave['start']);last=date.fromisoformat(leave['end'])
+        for n in range((last-first).days+1):
+            day=(first+timedelta(days=n)).isoformat()
+            employee=employees_by_id[leave['employee_id']]
+            db.execute('INSERT OR IGNORE INTO attendance(employee_id,day,work_mode) VALUES(?,?,?)',(leave['employee_id'],day,employee['work_mode']))
+            attendance=one(db,'SELECT id FROM attendance WHERE employee_id=? AND day=?',(leave['employee_id'],day))
+            db.execute('DELETE FROM attendance_reviews WHERE attendance_id=?',(attendance['id'],))
+            db.execute("UPDATE attendance SET check_in=NULL,check_out=NULL,minutes=0,late_minutes=0,early_minutes=0,overtime_minutes=0,classification='Unclassified',review_status='Excused',exception=? WHERE id=?",('Approved: '+leave['name'],attendance['id']))
 
     # Six dated monthly KPI periods; only closed periods have approved scores.
     periods = []
@@ -412,12 +447,15 @@ def _seed_commercial(db, employees, departments, teams):
         insert(db,'quotation_lines',dict(quotation_id=quotation_id,service_id=service['id'] if service else None,description='Integrated campaign strategy, production and reporting',quantity=1,price_cents=contract_value))
         start=today-timedelta(days=90-index*4)
         end=today+timedelta(days=deadline_delta)
+        lifecycle=('Active','Completed','On hold','Active','Active','Completed','Planning','Active','On hold','Active')[index]
+        if lifecycle=='Completed':end=today-timedelta(days=7+index)
+        if lifecycle=='Planning':start=today+timedelta(days=7)
         contract_id=insert(db,'client_contracts',dict(name=project_name+' · client services agreement',account_id=account_id,deal_id=deal_id,quotation_id=quotation_id,owner_id=owner,value_cents=contract_value,currency='EGP',start=start.isoformat(),end=(end+timedelta(days=180)).isoformat(),renewal=(end+timedelta(days=150)).isoformat(),payment_terms='50% on approval; 50% on delivery milestones. Client media spend is separately authorized and reconciled.',services=json.dumps(['Strategy','Content production','Campaign management','Performance reporting']),status='Approved',notes='Approved commercial fees. Client advertising budgets are excluded from company revenue.'))
         db.execute('UPDATE deals SET converted_contract_id=? WHERE id=?',(contract_id,deal_id))
         insert(db,'leads',dict(name=project_name+' inquiry',company_name=names[index][0],contact_name='Business development contact',email=f'inquiry{index+1}@northstar-client.example',phone=f'+20 10 333 {3000+index}',industry=industry,source_id=(index%5)+1,owner_id=owner,team_id=team,expected_cents=contract_value,interested_services=json.dumps(['Full Digital Marketing']),status='Won',priority='High',qualification='Qualified',score=88-index,notes='Qualified through an inbound or referred client briefing.',converted_deal_id=deal_id))
         insert(db,'activities',dict(title='Monthly client planning · '+names[index][0],kind='Meeting',contact_id=contact_id,account_id=account_id,deal_id=deal_id,owner_id=owner,due=(today+timedelta(days=2+index)).isoformat()+'T11:00',status='Planned',notes='Confirm approvals, deliverables and next milestone.'))
         insert(db,'payments',dict(contract_id=contract_id,amount_cents=contract_value//2,day=(close+timedelta(days=7)).isoformat(),reference=f'NS-CLIENT-{2026}-{index+1:03d}',notes='First installment for approved services agreement.'))
-        project_ids.append(insert(db,'projects',dict(name=project_name,account_id=account_id,contract_id=contract_id,manager_id=employees['Mahmoud El Sayed'] if index%2==0 else employees['Farah Nasser'],start=start.isoformat(),deadline=end.isoformat(),budget_cents=budget,estimated_hours=180+index*12,status='Active',priority=('High','Medium','Urgent')[index%3],notes='Client scope, owners, approved fees and media spend are tracked separately.',results='Delivery progress is recorded against approved milestones and task reviews.')))
+        project_ids.append(insert(db,'projects',dict(name=project_name,account_id=account_id,contract_id=contract_id,manager_id=employees['Mahmoud El Sayed'] if index%2==0 else employees['Farah Nasser'],start=start.isoformat(),deadline=end.isoformat(),budget_cents=budget,estimated_hours=180+index*12,status=lifecycle,priority=('High','Medium','Urgent')[index%3],notes='Client scope, owners, approved fees and media spend are tracked separately.',results='Delivery progress is recorded against approved milestones and task reviews.')))
         deal_ids.append(deal_id);contract_ids.append(contract_id)
 
     # Additional open CRM work remains distinct from won client/project records.
@@ -452,11 +490,15 @@ def _seed_commercial(db, employees, departments, teams):
             db.execute('INSERT OR IGNORE INTO project_departments(project_id,department_id) VALUES(?,?)',(pid,employee['department_id']))
         project=one(db,'SELECT * FROM projects WHERE id=?',(pid,))
         for step,(title,offset,status) in enumerate([('Kickoff and client brief',-55,'Completed'),('Creative and channel approval',-25,'Completed'),('Delivery and performance review',index-4,'In progress')]):
-            insert(db,'milestones',dict(project_id=pid,title=title,due=(today+timedelta(days=offset)).isoformat(),status=status))
+            milestone_day=min(max(date.fromisoformat(project['start'])+timedelta(days=step*7),today+timedelta(days=offset)),date.fromisoformat(project['deadline']))
+            if project['status']=='Completed':status='Completed'
+            elif project['status']=='Planning':status='Planned'
+            elif project['status']=='On hold' and step==2:status='Blocked'
+            insert(db,'milestones',dict(project_id=pid,title=title,due=milestone_day.isoformat(),status=status))
         if index%3!=1:
             insert(db,'project_risks',dict(project_id=pid,title='Client approval timing may affect the next launch window',severity='Medium',mitigation='Confirm review dates at weekly check-in and keep the approved fallback assets ready.',owner_id=pm,status='Open' if index%2==0 else 'Mitigated'))
         campaign_name=PROJECTS[index][0]+' · '+campaigns[index][0]
-        campaign_id=insert(db,'campaigns',dict(project_id=pid,name=campaign_name,channel=campaigns[index][0],objective=campaigns[index][1],start=project['start'],end=project['deadline'],advertising_budget_cents=PROJECTS[index][2]//3,advertising_spend_cents=PROJECTS[index][2]//5,impressions=150000+index*21000,clicks=4200+index*600,conversions=240+index*35,attributed_revenue_cents=PROJECTS[index][3],status='Active'))
+        campaign_id=insert(db,'campaigns',dict(project_id=pid,name=campaign_name,channel=campaigns[index][0],objective=campaigns[index][1],start=project['start'],end=project['deadline'],advertising_budget_cents=PROJECTS[index][2]//3,advertising_spend_cents=PROJECTS[index][2]//5,impressions=150000+index*21000,clicks=4200+index*600,conversions=240+index*35,attributed_revenue_cents=PROJECTS[index][3],status='Completed' if project['status']=='Completed' or project['deadline']<today.isoformat() else 'Planning' if project['start']>today.isoformat() else 'Paused' if project['status']=='On hold' else 'Active'))
         campaign_ids.append(campaign_id)
         task_ids=[]
         task_rows=[
@@ -467,23 +509,29 @@ def _seed_commercial(db, employees, departments, teams):
             (assigned[4], 'Confirm spokesperson and media approvals',12,'To do',4),
         ]
         for task_index,(assignee,title,due_offset,status,hours) in enumerate(task_rows):
+            if project['status']=='Completed':status='Done'
+            elif project['status']=='Planning':status='To do'
+            elif task_index<(index%4):status='Done'
+            task_due=max(date.fromisoformat(project['start']),min(today+timedelta(days=due_offset),date.fromisoformat(project['deadline'])))
             employee=one(db,'SELECT team_id,department_id FROM employees WHERE id=?',(assignee,))
-            task_id=insert(db,'tasks',dict(project_id=pid,employee_id=assignee,team_id=employee['team_id'],department_id=employee['department_id'],assigned_by=pm,title=title,due=(today+timedelta(days=due_offset)).isoformat(),priority='High' if task_index in (0,2) else 'Medium',complexity=2+(task_index%4),estimated_hours=hours,actual_hours=hours if status=='Done' else round(hours*.4,1),status=status,quality_score=90 if status=='Done' else None,delay_context='Client review moved by two working days.' if status=='Blocked' else ''))
+            task_id=insert(db,'tasks',dict(project_id=pid,employee_id=assignee,team_id=employee['team_id'],department_id=employee['department_id'],assigned_by=pm,title=title,due=task_due.isoformat(),priority='High' if task_index in (0,2) else 'Medium',complexity=2+(task_index%4),estimated_hours=hours,actual_hours=0 if project['status']=='Planning' else hours if status=='Done' else round(hours*.4,1),status=status,quality_score=90 if status=='Done' else None,delay_context='Client review moved by two working days.' if status=='Blocked' else ''))
             task_ids.append(task_id)
+            task_value=one(db,'SELECT actual_hours FROM tasks WHERE id=?',(task_id,))['actual_hours']
+            if task_value:insert(db,'time_records',dict(task_id=task_id,employee_id=assignee,day=max(date.fromisoformat(project['start']),min(today-timedelta(days=2),date.fromisoformat(project['deadline']))).isoformat(),hours=task_value,notes='Recorded demonstration production effort for this task.'))
         # Department work is explicit and separate from project-linked work.
         for eid,title,status,offset in [(pm,'Review portfolio delivery risks','In progress',3),(assigned[0],'Refresh internal design system notes','To do',14)]:
             employee=one(db,'SELECT team_id,department_id FROM employees WHERE id=?',(eid,))
             insert(db,'tasks',dict(project_id=None,employee_id=eid,team_id=employee['team_id'],department_id=employee['department_id'],assigned_by=pm,title=title,due=(today+timedelta(days=offset)).isoformat(),priority='Medium',complexity=2,estimated_hours=2,actual_hours=0,status=status))
-        deliverable_task=task_ids[0]
+        deliverable_task=task_ids[index%5]
         kind=deliverable_kinds[index%len(deliverable_kinds)]
         contributor=assigned[[0,1,2,3,4][index%5]]
         workflow_fields=one(db,'SELECT fields FROM delivery_workflows WHERE name=?',(kind,))
         content_data={field:'Reviewed and aligned with the approved client scope.' for field in json.loads(workflow_fields['fields'])} if workflow_fields else {}
-        deliverable_id=insert(db,'deliverables',dict(project_id=pid,task_id=deliverable_task,employee_id=contributor,title=PROJECTS[index][0]+' · '+kind,kind=kind,brief='Complete the approved project asset and record the review evidence.',asset_url=f'https://example.com/northstar-demo/project-{index+1}/deliverable',publish_at=(today+timedelta(days=7+index)).isoformat()+'T15:00',status='Approved' if index%3 else 'Under Review',version=1,quality_score=91 if index%3 else None,revisions=1 if index%3==0 else 0,content_data=json.dumps(content_data,ensure_ascii=False)))
-        if index%3:
+        deliverable_id=insert(db,'deliverables',dict(project_id=pid,task_id=deliverable_task,employee_id=contributor,title=PROJECTS[index][0]+' · '+kind,kind=kind,brief='Complete the approved project asset and record the review evidence.',asset_url=f'https://example.com/northstar-demo/project-{index+1}/deliverable',publish_at=min(max(date.fromisoformat(project['start']),today+timedelta(days=7+index)),date.fromisoformat(project['deadline'])).isoformat()+'T15:00',status='Approved' if project['status']=='Completed' or project['status']!='Planning' and index%3 else 'Draft' if project['status']=='Planning' else 'Under Review',version=1,quality_score=91 if project['status']=='Completed' or project['status']!='Planning' and index%3 else None,revisions=1 if index%3==0 else 0,content_data=json.dumps(content_data,ensure_ascii=False)))
+        if project['status']=='Completed' or project['status']!='Planning' and index%3:
+            db.execute("UPDATE tasks SET status='Approved',quality_score=91 WHERE id=?",(deliverable_task,))
             insert(db,'deliverable_reviews',dict(deliverable_id=deliverable_id,reviewer_id=pm,decision='Approved',comment='Reviewed against the approved brief and delivery checklist.',quality_score=91))
             insert(db,'audit_logs',dict(actor_id=one(db,'SELECT id FROM users WHERE employee_id=?',(pm,))['id'],entity='deliverables',record_id=deliverable_id,action='Reviewed',after_data=json.dumps({'decision':'Approved','quality_score':91}),reason='Demo review evidence.'))
-        insert(db,'time_records',dict(task_id=task_ids[0],employee_id=assigned[0],day=(today-timedelta(days=2)).isoformat(),hours=3,notes='Design review and handoff.'))
         if index in (0,3,6,9):
             insert(db,'project_costs',dict(project_id=pid,title='External production services',kind='External production',amount_cents=PROJECTS[index][2]//18,day=(today-timedelta(days=10)).isoformat(),reason='Approved vendor production cost tracked separately from client media spend.'))
         # Project stages and their commercial conversion chain remain directly linked.
@@ -506,7 +554,9 @@ def check_demo_company(db):
         'client_contracts': one(db,"SELECT COUNT(*) AS n FROM client_contracts WHERE status='Approved'")['n'],
         'campaigns': one(db,'SELECT COUNT(*) AS n FROM campaigns')['n'],
     }
-    expected = {'employees':50,'users':50,'active_projects':10,'accounts':12,'client_contracts':10,'campaigns':10}
+    expected = {'employees':50,'users':50,'active_projects':5,'accounts':12,'client_contracts':10,'campaigns':10}
+    marker=one(db,"SELECT value FROM demo_company_meta WHERE key='seed_version'") if one(db,"SELECT name FROM sqlite_master WHERE name='demo_company_meta'") else None
+    if marker and marker['value']=='northstar-demo-v1':expected['active_projects']=10
     if actual != expected:
         raise ValueError(f'Demo data quality check failed: expected {expected}, found {actual}.')
     if db.execute('PRAGMA foreign_key_check').fetchall():
@@ -538,7 +588,7 @@ def build_company(db):
         _historical_hr(db,people)
         commercial=_seed_commercial(db,people,departments,teams)
         db.execute('CREATE TABLE IF NOT EXISTS demo_company_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
-        db.execute("INSERT OR REPLACE INTO demo_company_meta(key,value) VALUES('seed_version','northstar-demo-v1')")
+        db.execute("INSERT OR REPLACE INTO demo_company_meta(key,value) VALUES('seed_version','northstar-demo-v2')")
         db.execute("INSERT OR REPLACE INTO demo_company_meta(key,value) VALUES('created_on',?)",(company_today(db).isoformat(),))
         actual=check_demo_company(db)
         db.commit()

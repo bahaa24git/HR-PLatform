@@ -3,31 +3,47 @@ import calendar
 import json
 from datetime import date, timedelta
 from .db import rows, one, insert
-from .service import require, Problem, scope_ids, settings, check_employee, list_resource, company_today
+from .service import require, Problem, scope_ids, settings, check_employee, list_resource, company_today, scheduled_day, attendance_classification
 
-def attendance_report(db,u):
-    ids=scope_ids(db,u)
+def filtered_people(db,u,filters=None):
+    filters=filters or {}
+    ids=set(scope_ids(db,u))
+    for key,column in [('employee_id','id'),('department_id','department_id'),('team_id','team_id')]:
+        if filters.get(key):ids &= {r['id'] for r in rows(db,'SELECT id FROM employees WHERE '+column+'=?',(int(filters[key]),))}
+    return ids
+
+def attendance_report(db,u,filters=None):
+    require(u['role']!='admin','System administrators do not have attendance-record access.')
+    filters=filters or {}
+    ids=filtered_people(db,u,filters)
     s=settings(db)
     non_attendance_ids={r['employee_id'] for r in rows(db,"SELECT employee_id FROM users WHERE role IN ('owner','admin')")}
     data=[r for r in rows(db,'SELECT * FROM attendance ORDER BY day DESC') if r['employee_id'] in ids and r['employee_id'] not in non_attendance_ids]
+    for record in data:
+        record['classification']=attendance_classification(db,record)
+        if record['classification']=='Absent' and record['review_status'] not in ('Excused','Unauthorized'):record['review_status']='Pending'
+    start=date.fromisoformat(filters.get('start') or (company_today(db)-timedelta(days=30)).isoformat())
+    end=date.fromisoformat(filters.get('end') or company_today(db).isoformat())
+    require(start<=end and (end-start).days<=366,'Use a date range of at most 366 days.',400)
     seen={(r['employee_id'],r['day']) for r in data}
     employees=[e for e in rows(db,"SELECT id,joined,work_mode,status FROM employees WHERE status!='Archived'") if e['id'] in ids and e['id'] not in non_attendance_ids]
     synthetic=-1
     # Missing attendance on completed scheduled days is a review indicator only,
     # never an automatically imposed payroll deduction.
-    for n in range(1,31):
-        day=company_today(db)-timedelta(days=n)
-        if day.weekday() not in s['workdays']: continue
+    for n in range((end-start).days+1):
+        day=start+timedelta(days=n)
+        if day>=company_today(db) or not scheduled_day(db,day):continue
         for emp in employees:
             if emp['joined']>day.isoformat() or (emp['id'],day.isoformat()) in seen: continue
             approved=one(db,"SELECT l.id FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE employee_id=? AND status='Approved' AND start<=? AND end>=? AND t.unit='days'",(emp['id'],day.isoformat(),day.isoformat()))
             if approved: continue
             data.append(dict(id=synthetic,employee_id=emp['id'],day=day.isoformat(),check_in=None,check_out=None,minutes=0,late_minutes=0,early_minutes=0,overtime_minutes=0,work_mode=emp['work_mode'],exception='Missing attendance — review required',classification='Unclassified',review_status='Not required'))
             synthetic-=1
+    data=[r for r in data if start.isoformat()<=r['day']<=end.isoformat()]
     indicators=[]
     for emp in employees:
-        recent=[r for r in data if r['employee_id']==emp['id'] and r['day']>=(company_today(db)-timedelta(days=30)).isoformat()]
-        indicators.append(dict(employee_id=emp['id'],late_days=sum(r['late_minutes']>0 for r in recent),absence_indicators=sum(r['id']<0 for r in recent),early_days=sum(r['early_minutes']>0 for r in recent),overtime_hours=round(sum(r['overtime_minutes'] for r in recent)/60,2)))
+        recent=[r for r in data if r['employee_id']==emp['id']]
+        indicators.append(dict(employee_id=emp['id'],late_days=sum(r['classification']=='Late' for r in recent),absence_indicators=sum(r['classification']=='Absent' for r in recent),missing_punches=sum(r['id']<0 for r in recent),present_days=sum(r['classification'] in ('Normal','Late') for r in recent),early_days=sum(r['early_minutes']>0 for r in recent),overtime_hours=round(sum(r['overtime_minutes'] for r in recent)/60,2)))
     return {'records':sorted(data,key=lambda r:r['day'],reverse=True),'indicators':indicators}
 
 def workforce(db,u):
@@ -62,17 +78,20 @@ def workforce(db,u):
     replacement=sum(p['salary_cents']*3 for p in people if any(r['employee_id']==p['id'] and r['completed_day'] for r in resignations))
     return dict(periods=periods,average_tenure_years=tenure,departments=departments,resignation_themes=reasons,replacement_cost_estimate_cents=replacement,replacement_assumption='Illustrative estimate: three months of recorded base salary per completed departure, not an accounting liability.')
 
-def performance_insights(db,u):
+def performance_insights(db,u,filters=None):
+    filters=filters or {}
+    ids=filtered_people(db,u,filters)
     reports=list_resource(db,u,'reports')
-    kpis=list_resource(db,u,'kpis')
+    kpis=[k for k in list_resource(db,u,'kpis') if k['employee_id'] in ids]
     periods=rows(db,'SELECT * FROM performance_periods ORDER BY start')
     summary=[]
     for p in periods:
+        if p['end']<(filters.get('start') or '0001-01-01') or p['start']>(filters.get('end') or '9999-12-31'):continue
         relevant=[k for k in kpis if k['period_id']==p['id']]
-        approved=[k for k in relevant if k['status']=='Approved']
+        approved=[k for k in relevant if k['status'] in ('Approved','Completed')]
         total=sum(k['weight'] for k in approved)
         score=round(sum(min(1,k['actual']/k['target'] if k['direction']=='higher' else k['target']/max(k['actual'],.001))*k['weight'] for k in approved)/total*100,1) if total else None
-        summary.append(dict(period=p['name'],start=p['start'],end=p['end'],score=score,objectives=len(approved)))
+        summary.append(dict(period=p['name'],start=p['start'],end=p['end'],score=score,objectives=len(approved),statuses={status:sum(k['status']==status for k in relevant) for status in ('Proposed','Review requested','Approved','Completed','Rejected')},pending=sum(k['status'] in ('Proposed','Review requested') for k in relevant)))
     return {'periods':summary,'report_months':sorted(set(r['month'] for r in reports)), 'notes':[r for r in rows(db,'SELECT * FROM performance_notes ORDER BY id DESC') if r['employee_id'] in scope_ids(db,u)]}
 
 def performance_note(db,u,p):
@@ -116,6 +135,23 @@ def training(db,u,method,p):
         course=one(db,'SELECT * FROM courses WHERE id=?',(plan['course_id'],))
         result.append(dict(plan_id=plan['id'],employee_id=plan['employee_id'],course=course['title'],skill=course['skill'],progress=plan['progress'],assessment_change=plan['post_score']-plan['pre_score'] if plan['progress']==100 else None,kpi_change=plan['followup_kpi']-plan['baseline_kpi'] if plan['progress']==100 else None,practical_application=plan['application'],cost_cents=course['cost_cents'],duration_hours=course['duration_hours'],attendance=rows(db,'SELECT day,attended,notes FROM training_attendance WHERE plan_id=?',(plan['id'],))))
     return result
+
+def career_readiness(db,u,eid=None):
+    """Documented development gaps, never an automatic promotion decision."""
+    eid=int(eid or u['employee_id']);check_employee(db,u,eid)
+    employee=one(db,'SELECT position_id,joined FROM employees WHERE id=?',(eid,))
+    skills={}
+    for skill in rows(db,'SELECT * FROM employee_skills WHERE employee_id=? ORDER BY assessed_at,id',(eid,)):
+        skills[skill['name'].casefold()]=skill['proficiency']
+    today=company_today(db);joined=date.fromisoformat(employee['joined'])
+    months=max(0,(today.year-joined.year)*12+today.month-joined.month-(today.day<joined.day))
+    paths=[]
+    for path in rows(db,'SELECT c.*,p.title AS next_position FROM career_paths c JOIN positions p ON p.id=c.to_position_id WHERE c.from_position_id=?',(employee['position_id'],)):
+        path['skills']=[{'name':name,'recorded_proficiency':skills.get(name.casefold()),'required_proficiency':path['minimum_proficiency'],'gap':max(0,path['minimum_proficiency']-skills[name.casefold()]) if name.casefold() in skills else None} for name in json.loads(path['required_skills'])]
+        path['tenure_months']=months
+        path['recorded_requirements_met']=months>=path['minimum_months'] and all(s['recorded_proficiency'] is not None and s['gap']==0 for s in path['skills'])
+        paths.append(path)
+    return {'employee_id':eid,'paths':paths,'caution':'Development readiness uses recorded skills and tenure only. Missing assessments are unknown. Promotion requires an authorized human review of performance, responsibilities and available roles.'}
 
 def assign_team(db,u,p):
     require(u['role'] in ('hr','leader','manager'))

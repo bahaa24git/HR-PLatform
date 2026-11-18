@@ -31,7 +31,7 @@ if __name__=='__main__':
     if not configuration()['available']:
         raise SystemExit('Live model is not configured.')
     with tempfile.TemporaryDirectory() as directory:
-        path=Path(directory)/'fictional.sqlite3';initialize(path)
+        path=Path(directory)/'fictional.sqlite3';initialize(path,demo=True)
         with closing(connect(path)) as db:
             user=one(db,'SELECT u.*,e.department_id,e.name,e.team_id FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.id=2')
             result=ask(db,user,{'message':'Create a professional employee KPI report as an actual table. Use only the supplied fictional seed records, include actual versus target and record IDs, and state the dates of available evidence. Include a chart only if supported. This is a formatting verification, not an employment decision.'})

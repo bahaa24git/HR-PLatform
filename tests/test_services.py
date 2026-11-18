@@ -24,7 +24,7 @@ class ServicesTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp=tempfile.TemporaryDirectory()
         cls.seed=Path(cls.tmp.name)/'seed.sqlite3'
-        initialize(cls.seed)
+        initialize(cls.seed,demo=True)
 
     @classmethod
     def tearDownClass(cls): cls.tmp.cleanup()
@@ -87,8 +87,8 @@ class ServicesTest(unittest.TestCase):
         with self.assertRaises(Problem): attendance_action(self.db,self.nora,{'action':'out'})
 
     def test_geofence_remote_exemption_and_office_validation(self):
-        s=settings(self.db)['geofence'];s['enabled']=True
-        save_settings(self.db,self.hr,{'geofence':s})
+        s=settings(self.db)['geofence'];s.update(enabled=True,latitude=30.0,longitude=31.0)
+        save_settings(self.db,self.hr,{'geofence':s,'geofence_confirmed':True})
         # Nora is office; Sara is flexible and exempt by default.
         with self.assertRaises(Problem): attendance_action(self.db,self.nora,{'action':'in'})
         self.db.execute("UPDATE employees SET work_mode='Remote' WHERE id=6")
@@ -124,6 +124,8 @@ class ServicesTest(unittest.TestCase):
         own=[r for r in list_resource(self.db,self.nora,'payroll') if r['month']==month]
         self.assertEqual(1,len(own))
         self.assertEqual(6,own[0]['employee_id'])
+        for pending in rows(self.db,"SELECT id FROM leave_requests WHERE employee_id=6 AND status='Pending'"):
+            decide_leave(self.db,self.hr,pending['id'],{'decision':'Rejected','reason':'Resolved before payroll finalization in test.'})
         payroll_action(self.db,self.hr,{'action':'approve','id':own[0]['id']})
         self.db.execute('UPDATE employees SET salary_cents=100000 WHERE id=6')
         payroll_action(self.db,self.hr,{'action':'process','month':month})
@@ -280,7 +282,7 @@ class HTTPTest(unittest.TestCase):
         cls.tmp=tempfile.TemporaryDirectory()
         cls.old_path=database.DB_PATH
         database.DB_PATH=Path(cls.tmp.name)/'http.sqlite3'
-        initialize()
+        initialize(demo=True)
         cls.server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
         cls.thread=threading.Thread(target=cls.server.serve_forever,daemon=True);cls.thread.start()
         cls.base=f'http://127.0.0.1:{cls.server.server_port}'

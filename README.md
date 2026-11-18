@@ -1,5 +1,9 @@
 # Northstar Company OS
 
+The 18 November 2026 audit adds payroll finalization safeguards, corrected attendance counts, role-access fixes, real performance trends, holidays, audited timesheet imports/corrections, invoices/collections and career development paths. See [the full audit report](docs/FULL_AUDIT_REPORT.md) for exact verification, migrations, limitations and launch instructions, and [the vendor feature comparison](docs/FAWRY_FEATURE_GAP.md) for sourced Fawry-related capabilities.
+
+Normal initialization does not seed fictional employees. For a brand-new empty installation only, use `python scripts/setup_first_account.py --database data/hr.sqlite3` to explicitly create the first authorized HR account with a privately entered password; existing accounts are never replaced.
+
 An integrated company-management application for a digital marketing and media-production company: CRM → sales → clients/contracts → projects/campaigns → tasks/deliverables → employee performance, with HR, analytics and a permission-aware real-model advisor.
 
 This upgrades the existing Northstar HR application **in place**. Existing employee, contract, attendance, leave, payroll and report records are retained. Commercial records start empty; no fabricated company data is inserted during normal startup. A complete fictional organization is available only in its dedicated disposable demo database.

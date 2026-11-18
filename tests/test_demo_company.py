@@ -41,7 +41,7 @@ class DemoCompanyTest(unittest.TestCase):
 
     def test_dataset_integrity_and_seed_rerun(self):
         self.assertTrue(build_company(self.db)['already_seeded'])
-        self.assertEqual({'employees':50,'users':50,'active_projects':10,'accounts':12,'client_contracts':10,'campaigns':10},check_demo_company(self.db))
+        self.assertEqual({'employees':50,'users':50,'active_projects':5,'accounts':12,'client_contracts':10,'campaigns':10},check_demo_company(self.db))
         self.assertEqual(10,one(self.db,'''SELECT COUNT(*) AS n FROM projects p JOIN accounts a ON a.id=p.account_id
             JOIN client_contracts c ON c.id=p.contract_id AND c.account_id=p.account_id AND c.status='Approved'
             JOIN deals d ON d.id=c.deal_id AND d.account_id=a.id AND d.converted_contract_id=c.id

@@ -15,7 +15,7 @@ ReportLab remains the PDF engine: it is already installed, supports embedded Ara
 3. Existing `ai_interactions.response` and `ai_messages.result_json` store the document. No database migration is needed. The cache version changed so earlier unstructured answers do not satisfy new requests.
 4. `frontend/report-format.js` renders escaped text, actual `<table>` elements, KPI cards, lists, and SVG charts. Model HTML never executes.
 5. `GET /api/ai/reports/:id` returns the authorized report preview. `frontend/people-ui.js` opens it with template, orientation, layout language, and chart controls.
-6. All `GET /api/exports/:kind/:id` routes delegate to `backend/report_pdf.py`. AI reports retain ownership/current-evidence checks; application reports use the existing record and module scope checks.
+6. All `GET /api/exports/:kind/:id` routes delegate to `backend/report_pdf.py`. AI reports retain ownership/current-permission checks; application reports use the existing record and module scope checks.
 
 ## Shared style for application reports
 
@@ -43,7 +43,7 @@ Supported sections: narrative, list, KPI grid, typed table, and chart. Supported
 
 ## Security and compatibility
 
-Report generation reuses scoped evidence retrieval. Preview and download require the authenticated owner of the report and a matching current evidence fingerprint; changed access/data requires regeneration. Existing salary, employee, team, and department restrictions remain in force. This application is a single-organization installation; this change does not introduce or claim a separate multi-tenant model.
+Report generation reuses scoped evidence retrieval. Preview and download require the authenticated owner of the report and a matching current authorization snapshot, including role, employee/project scope and campaign capabilities. Ordinary data edits do not invalidate new historical reports. Changed permissions block the report and its use in conversation context. Legacy reports without an authorization snapshot retain conservative evidence revalidation and may require regeneration. Existing salary, employee, team, and department restrictions remain in force. This application is a single-organization installation; this change does not introduce or claim a separate multi-tenant model.
 
 Model text is escaped in HTML, SVG text, and ReportLab paragraphs. No model URLs or HTML are used to load resources. PDFs are generated in memory and downloaded through authenticated routes. Fixture output contains synthetic data only; no operational records were modified by report generation tests.
 

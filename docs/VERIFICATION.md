@@ -1,3 +1,5 @@
+Latest audit and current results: [Full audit report, 18 November 2026](FULL_AUDIT_REPORT.md). The historical runs below are retained as prior evidence.
+
 # Transformation verification — 15 November 2026
 
 Executed locally on Windows using Python 3.13.5, Node.js 22.15.0 and installed Chrome. This record supersedes the original HR-only verification.

@@ -42,6 +42,13 @@ def project_ids(db,u):
     people=commercial_people(db,u) if u['role'].startswith('sales') else set(scope_ids(db,u))
     return {r['id'] for r in rows(db,'SELECT id,manager_id FROM projects') if r['manager_id']==u['employee_id']}|{r['project_id'] for r in rows(db,'SELECT project_id,employee_id FROM project_members') if r['employee_id'] in people}
 
+def project_tasks(db,u,pid):
+    require(pid in project_ids(db,u))
+    if u['role'] in ('owner','executive','accountant','hr','project_manager'):
+        from .service import task_deadline_status
+        return [{**t,'deadline_status':task_deadline_status(db,t)} for t in rows(db,'SELECT * FROM tasks WHERE project_id=?',(pid,))]
+    return [t for t in list_resource(db,u,'tasks') if t.get('project_id')==pid]
+
 def allowed_module(db,u,entity):
     return entity in BUSINESS and business_module(db,u,entity)
 
@@ -50,6 +57,12 @@ def records(db,u,entity):
     require(allowed_module(db,u,entity))
     if entity=='team_access':return rows(db,'SELECT user_id,team_id FROM team_access')
     data=rows(db,f'SELECT * FROM {entity} ORDER BY id DESC')
+    if entity=='invoices':
+        for invoice in data:
+            invoice['currency']=one(db,'SELECT currency FROM client_contracts WHERE id=?',(invoice['contract_id'],))['currency']
+            invoice['received_cents']=one(db,'SELECT COALESCE(SUM(amount_cents),0) AS n FROM payments WHERE invoice_id=?',(invoice['id'],))['n']
+            invoice['outstanding_cents']=invoice['amount_cents']-invoice['received_cents']
+            invoice['collection_status']='Paid' if invoice['outstanding_cents']==0 else 'Overdue' if invoice['status']=='Issued' and invoice['due']<company_today(db).isoformat() else invoice['status']
     if entity in ORGANIZATION|CONFIG:return data
     if u['role'] in GLOBAL:return data
     people=commercial_people(db,u)
@@ -75,6 +88,9 @@ def records(db,u,entity):
         tasks={r['id'] for r in list_resource(db,u,'tasks')}
         return [r for r in data if r['task_id'] in tasks]
     if entity=='payments':
+        contracts={r['id'] for r in records(db,u,'client_contracts')}
+        return [r for r in data if r['contract_id'] in contracts]
+    if entity=='invoices':
         contracts={r['id'] for r in records(db,u,'client_contracts')}
         return [r for r in data if r['contract_id'] in contracts]
     if entity=='sales_targets':return [r for r in data if r['employee_id'] in people or r['team_id'] in team_ids(db,u)]
@@ -156,6 +172,9 @@ def validate_values(db,u,entity,p,old=None):
     if entity=='client_contracts' and merged['status']=='Approved' and (not old or old['status']!='Approved'):
         require(u['role'] in ('owner','sales_manager'),'Only authorized management can approve a client contract.')
         require(p.get('confirmed') is True,'Confirm contract approval.',409)
+    if entity=='client_contracts' and old and old['status']=='Approved':
+        require(not any(k in v and v[k]!=old[k] for k in ('account_id','deal_id','quotation_id','value_cents','currency','start','end')),'Approved contract financial terms are historical. Record a separately approved agreement for a changed scope.',409)
+        require(merged['status']!='Draft','Approved contracts cannot be reopened as drafts.',409)
     if entity=='projects':
         contract=record(db,u,'client_contracts',merged['contract_id'])
         require(contract['status']=='Approved','The client contract must be approved before project creation.',409)
@@ -163,6 +182,12 @@ def validate_values(db,u,entity,p,old=None):
         if contract['deal_id']:
             won=one(db,'SELECT s.outcome FROM deals d JOIN pipeline_stages s ON s.id=d.stage_id WHERE d.id=?',(contract['deal_id'],))
             require(won['outcome']=='Won','The linked deal must be won.',409)
+        if merged['status']=='Completed' and old:
+            require(not one(db,"SELECT id FROM tasks WHERE project_id=? AND status NOT IN ('Done','Completed','Approved')",(old['id'],)),'Complete the project tasks before closing the project.',409)
+            require(not one(db,"SELECT id FROM deliverables WHERE project_id=? AND status!='Approved'",(old['id'],)),'Approve project deliverables before closing the project.',409)
+            require(not one(db,"SELECT id FROM milestones WHERE project_id=? AND status!='Completed'",(old['id'],)),'Complete project milestones before closing the project.',409)
+    if entity=='campaigns' and merged['status']=='Active':
+        if merged['end']<company_today(db).isoformat():require(bool(str(merged.get('extension_reason','')).strip()),'An ended campaign needs a documented extension reason or a completed status.',409)
     if entity=='deliverables':
         if old and u['role'] not in MANAGERS:require(old['employee_id']==u['employee_id'],'Only the contributor or an authorized manager can edit this deliverable.')
         if u['role'] not in MANAGERS:require(merged['employee_id']==u['employee_id'])
@@ -188,6 +213,20 @@ def validate_values(db,u,entity,p,old=None):
     if entity=='sales_targets':require(bool(merged.get('employee_id') or merged.get('team_id')) and merged['target_cents']>0,'Choose a target subject and positive amount.',400)
     if entity=='payments':
         require(not one(db,'SELECT id FROM payments WHERE contract_id=? AND reference=? AND id!=?',(merged['contract_id'],merged['reference'],old['id'] if old else 0)),'This receipt reference is already recorded for the contract.',409)
+        require(merged['amount_cents']>0,'Receipt amount must be positive.',400)
+        if merged.get('invoice_id'):
+            invoice=record(db,u,'invoices',merged['invoice_id'])
+            require(invoice['contract_id']==merged['contract_id'] and invoice['status']=='Issued','Choose an issued invoice from the same contract.',400)
+            paid=one(db,'SELECT COALESCE(SUM(amount_cents),0) AS n FROM payments WHERE invoice_id=? AND id!=?',(invoice['id'],old['id'] if old else 0))['n']
+            require(paid+merged['amount_cents']<=invoice['amount_cents'],'Receipts exceed the invoice balance.',409)
+    if entity=='invoices':
+        contract=record(db,u,'client_contracts',merged['contract_id'])
+        require(contract['status']=='Approved','Invoice requires an approved client contract.',409)
+        require(merged['due']>=merged['issued'] and merged['amount_cents']>0,'Use a positive invoice amount and a due date on or after issue.',400)
+        if old and old['status']!='Draft':require(not any(k in v and v[k]!=old[k] for k in ('contract_id','number','issued','due','amount_cents')),'Issued invoices retain their original financial terms.',409)
+        if old and old['status']=='Issued':require(merged['status'] in ('Issued','Cancelled'),'Issued invoices cannot be reopened as drafts.',409)
+        if old and old['status']=='Cancelled':require(merged['status']=='Cancelled','Cancelled invoices cannot be reopened.',409)
+        if merged['status']=='Cancelled' and old:require(not one(db,'SELECT id FROM payments WHERE invoice_id=?',(old['id'],)),'An invoice with receipts cannot be cancelled.',409)
     if entity in ('pipeline_stages','seniorities') and 'position' in v:require(float(v['position']).is_integer(),'Stage order must be a whole number.',400)
     return v
 
@@ -322,6 +361,8 @@ def task_assignees(db,u,team):
 
 def validate_task(db,u,p,old=None):
     v={**(old or {}),**p}
+    if old and any(k in p and p[k]!=old[k] for k in ('employee_id','project_id')):
+        require(not one(db,'SELECT id FROM deliverables WHERE task_id=?',(old['id'],)),'A task with linked deliverables cannot be reassigned to another contributor/project; preserve its delivery history.',409)
     require(v.get('team_id'),'Select the target team first.',400)
     require(type(v.get('complexity')) in (int,float) and float(v['complexity']).is_integer() and 1<=v['complexity']<=5,'Difficulty must be a whole number from 1 to 5.',400)
     if not old or any(k in p and p[k]!=old[k] for k in ('employee_id','team_id')):
@@ -339,6 +380,8 @@ def review_deliverable(db,u,ident,p):
     decision=p.get('decision');require(decision in ('Approved','Revision Required','Under Review'),'Invalid review decision.',400)
     comment=str(p.get('comment','')).strip();require(comment,'Review comments are required.',400)
     quality=float(p.get('quality_score',0));require(0<=quality<=100,'Quality must be 0–100.',400)
+    if decision=='Approved' and r['task_id']:
+        require(not one(db,"SELECT t.id FROM task_dependencies d JOIN tasks t ON t.id=d.depends_on_id WHERE d.task_id=? AND t.status NOT IN ('Done','Completed','Approved')",(r['task_id'],)),'Complete blocking task dependencies before approving this deliverable.',409)
     insert(db,'deliverable_reviews',dict(deliverable_id=ident,reviewer_id=u['employee_id'],decision=decision,comment=comment,quality_score=quality))
     db.execute('UPDATE deliverables SET status=?,quality_score=?,revisions=revisions+?,version=version+? WHERE id=?',(decision,quality,int(decision=='Revision Required'),int(decision=='Revision Required'),ident))
     if r['task_id']:db.execute('UPDATE tasks SET status=?,quality_score=? WHERE id=?',(decision,quality,r['task_id']))
@@ -358,7 +401,7 @@ def timeline(db,u,entity,ident):
     if entity=='quotations':related['lines']=rows(db,'SELECT * FROM quotation_lines WHERE quotation_id=?',(ident,))
     if entity=='projects':
         for table in ['project_members','milestones','project_risks','campaigns','deliverables']:
-            related[table]=[x for x in records(db,u,table) if x['project_id']==ident]
+            related[table]=[x for x in records(db,u,table) if x['project_id']==ident] if allowed_module(db,u,table) else []
         visible_tasks=list_resource(db,u,'tasks')
         related['tasks']=[{key:value for key,value in task.items() if key in ('id','title','status','employee_id','due','complexity','estimated_hours','actual_hours','quality_score','delay_context','project_id','project_name','task_category','deadline_status')} for task in visible_tasks if task.get('project_id')==ident]
     if entity=='deliverables':related['reviews']=rows(db,'SELECT r.*,e.name AS reviewer FROM deliverable_reviews r JOIN employees e ON e.id=r.reviewer_id WHERE deliverable_id=? ORDER BY r.id',(ident,))
@@ -375,7 +418,21 @@ def analytics(db,u,filters=None):
         for key in ('team_id','employee_id','project_id','department_id'):
             if filters.get(key):
                 name='owner_id' if key=='employee_id' and entity in ('leads','deals') else key
-                result=[r for r in result if str(r.get(name,''))==str(filters[key])]
+                if entity=='projects' and key=='project_id':name='id'
+                if result and name in result[0]:
+                    result=[r for r in result if str(r.get(name,''))==str(filters[key])]
+                elif key in ('team_id','department_id','employee_id'):
+                    column='id' if key=='employee_id' else key
+                    people={r['id'] for r in rows(db,'SELECT id FROM employees WHERE '+column+'=?',(int(filters[key]),))}
+                    pids={r['project_id'] for r in rows(db,'SELECT project_id,employee_id FROM project_members') if r['employee_id'] in people}
+                    pids|={r['id'] for r in rows(db,'SELECT id,manager_id FROM projects') if r['manager_id'] in people}
+                    if entity=='projects':result=[r for r in result if r['id'] in pids]
+                    elif entity in ('campaigns','deliverables'):result=[r for r in result if r['project_id'] in pids]
+                    elif entity=='client_contracts':result=[r for r in result if r['owner_id'] in people]
+                elif key=='project_id':
+                    project=one(db,'SELECT account_id,contract_id FROM projects WHERE id=?',(int(filters[key]),))
+                    if entity=='client_contracts':result=[r for r in result if project and r['id']==project['contract_id']]
+                    elif entity=='accounts':result=[r for r in result if project and r['id']==project['account_id']]
         return result
     deals=filtered('deals');stages={s['id']:s for s in rows(db,'SELECT * FROM pipeline_stages')}
     won=[d for d in deals if stages[d['stage_id']]['outcome']=='Won' and start<=str(d['actual_close'] or '')<=end]
@@ -386,7 +443,9 @@ def analytics(db,u,filters=None):
     cids={c['id'] for c in contracts};pids={p['id'] for p in projects}
     revenue=sum(c['value_cents'] for c in contracts if c['status']=='Approved' and start<=c['start']<=end)
     receipts=rows(db,'SELECT * FROM payments') if u['role'] in {'owner','accountant'} else []
-    received=sum(p['amount_cents'] for p in receipts if p['contract_id'] in cids and start<=p['day']<=end)
+    primary=settings(db)['currency']
+    primary_contracts={c['id'] for c in contracts if c['currency']==primary}
+    received=sum(p['amount_cents'] for p in receipts if p['contract_id'] in primary_contracts and start<=p['day']<=end)
     by_currency=[]
     for currency in sorted({d['currency'] for d in deals}|{c['currency'] for c in contracts}):
         by_currency.append(dict(currency=currency,won_cents=sum(d['value_cents'] for d in won if d['currency']==currency),pipeline_cents=sum(d['value_cents'] for d in open_deals if d['currency']==currency),forecast_cents=round(sum(d['value_cents']*d['probability']/100 for d in open_deals if d['currency']==currency)),contracted_cents=sum(c['value_cents'] for c in contracts if c['status']=='Approved' and c['currency']==currency and start<=c['start']<=end)))
@@ -400,7 +459,7 @@ def analytics(db,u,filters=None):
         teams.append(dict(id=team['id'],name=team['name'],deals=len(team_deals),won=len(tw),won_cents=sum(d['value_cents'] for d in tw),conversion=round(100*len(tw)/len(team_deals),1)))
     project_summary=[]
     for p in projects:
-        tasks=[task for task in list_resource(db,u,'tasks') if task.get('project_id')==p['id']]
+        tasks=project_tasks(db,u,p['id'])
         costs=rows(db,'SELECT * FROM project_costs WHERE project_id=?',(p['id'],))
         hours=sum(t['actual_hours'] for t in tasks)
         effort_cost=0
@@ -441,6 +500,14 @@ def analytics(db,u,filters=None):
     result=dict(currency=primary,by_currency=by_currency,revenue_cents=primary_totals['contracted_cents'],won_cents=primary_totals['won_cents'],pipeline_cents=primary_totals['pipeline_cents'],forecast_cents=primary_totals['forecast_cents'],forecast_disclosure='Probability-weighted estimate, not recognized revenue.',received_cents=received,won_count=len(won),lost_count=len(lost),lead_count=len(leads),active_clients=sum(a['status']=='Active client' for a in accounts),active_projects=sum(p['status'] in ('Planning','Active') for p in projects),conversion_percent=round(100*len(won)/(len(won)+len(lost)),1) if won or lost else None,average_deal_cents=round(sum(d['value_cents'] for d in won if d['currency']==primary)/max(1,sum(d['currency']==primary for d in won))),average_sales_cycle_days=round(sum(cycle)/len(cycle),1) if cycle else None,teams=teams,projects=project_summary,lead_sources=sources,targets=targets,loss_reasons=losses,monthly=monthly,overdue_activities=overdue[:20],upcoming_activities=sorted([a for a in activities if a['status']=='Planned'],key=lambda a:a['due'])[:10],alerts=[dict(title='Overdue follow-up',entity='activities',id=a['id']) for a in overdue],data_note='Contracted company revenue, won deal value, receipts and client advertising spend are separate measures.')
 
     enrich_analytics(db,u,result,deals,contracts,projects)
+    if allowed_module(db,u,'invoices'):
+        invoices=[i for i in records(db,u,'invoices') if i['contract_id'] in primary_contracts and i['status']=='Issued' and start<=i['issued']<=end]
+        invoice_ids={i['id'] for i in invoices}
+        allocated=sum(p['amount_cents'] for p in receipts if p.get('invoice_id') in invoice_ids)
+        result['invoiced_cents']=sum(i['amount_cents'] for i in invoices)
+        result['invoice_outstanding_cents']=result['invoiced_cents']-allocated
+        result['overdue_invoice_cents']=sum(max(0,i['amount_cents']-sum(p['amount_cents'] for p in receipts if p.get('invoice_id')==i['id'])) for i in invoices if i['due']<company_today(db).isoformat())
+        result['collections_note']='Invoice balances use receipts explicitly allocated to each invoice; unallocated contract receipts remain separate.'
     return result
 
 def search(db,u,query):
@@ -451,7 +518,9 @@ def search(db,u,query):
         for r in records(db,u,entity):
             if q in ' '.join(str(v) for v in r.values()).lower():result.append(dict(entity=entity,id=r['id'],title=r.get('name',r.get('title','Record')),status=r.get('status','')))
     from .service import list_resource
+    from .access import hr_modules
     for entity in ('articles','announcements','employees'):
+        if entity not in hr_modules(u['role']):continue
         for r in list_resource(db,u,entity):
             title=r.get('title',r.get('name','Record'))
             if q in (title+' '+r.get('content','')).lower():result.append(dict(entity=entity,id=r['id'],title=title,status=r.get('status','')))

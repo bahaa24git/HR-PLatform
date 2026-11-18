@@ -73,7 +73,7 @@ class ReportTest(unittest.TestCase):
     def test_provider_persistence_preview_and_authorization(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
-            path=Path(directory)/'reports.sqlite3';initialize(path)
+            path=Path(directory)/'reports.sqlite3';initialize(path,demo=True)
             with closing(connect(path)) as db:
                 user=one(db,'SELECT u.*,e.department_id,e.name,e.team_id FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.id=2')
                 other=one(db,'SELECT u.*,e.department_id,e.name,e.team_id FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.id=6')
@@ -95,7 +95,8 @@ class ReportTest(unittest.TestCase):
                     self.assertEqual('employee_performance',preview['document']['report_type'])
                     with self.assertRaises(Problem):report_content(db,other,result['report_id'])
                     db.execute("UPDATE employees SET name='Changed scope' WHERE id=2")
-                    with self.assertRaises(Problem) as stale:report_content(db,user,result['report_id'])
+                    self.assertTrue(report_content(db,user,result['report_id'])['document'])
+                    with self.assertRaises(Problem) as stale:report_content(db,{**user,'role':'employee'},result['report_id'])
                     self.assertEqual(409,stale.exception.status)
 
     def test_rendered_pdf_geometry(self):

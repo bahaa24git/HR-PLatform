@@ -1,6 +1,8 @@
 """Application services. Every read and mutation is scoped before data leaves this layer."""
 import base64
 import calendar
+import csv
+import io
 import hashlib
 import json
 import math
@@ -32,6 +34,25 @@ def company_now(db):return datetime.now(company_zone(db))
 
 def company_today(db):return company_now(db).date()
 
+def scheduled_day(db,day):
+    day=date.fromisoformat(day) if isinstance(day,str) else day
+    return day.weekday() in settings(db)['workdays'] and not one(db,'SELECT id FROM holidays WHERE day=?',(day.isoformat(),))
+
+def approved_leave(db,eid,day):
+    return one(db,"SELECT l.id,t.name,t.payroll_factor FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE l.employee_id=? AND l.status='Approved' AND l.start<=? AND l.end>=? AND t.unit='days'",(eid,day,day))
+
+def attendance_classification(db,record):
+    if approved_leave(db,record['employee_id'],record['day']):return 'Leave'
+    if one(db,'SELECT id FROM holidays WHERE day=?',(record['day'],)):return 'Holiday'
+    value=record.get('classification')
+    if record.get('check_in'):return classify_attendance(db,record['check_in'])
+    if value in ('Normal','Late'):return 'Unclassified'
+    if value in ('Normal','Late','Absent','Leave','Holiday'):return value
+    return classify_attendance(db,record['check_in']) if record.get('check_in') else 'Unclassified'
+
+def require_open_payroll_period(db,eid,start,end=None):
+    require(not one(db,"SELECT id FROM payroll WHERE employee_id=? AND status='Approved' AND month BETWEEN ? AND ?",(eid,start[:7],(end or start)[:7])),'This payroll period is finalized. Record any retrospective financial adjustment in a separately reviewed open period; the approved snapshot cannot be changed.',409)
+
 def add_months(value,months):
     month=value.month-1+months
     year=value.year+month//12
@@ -61,6 +82,11 @@ def permission(db,u,p):
 
 def employee_view(db,u,r):
     r=dict(r)
+    until=add_months(date.fromisoformat(r['joined']),3)
+    r['onboarding_end']=until.isoformat()
+    r['onboarding_active']=date.fromisoformat(r['joined'])<=company_today(db)<until
+    if r['status']=='Onboarding' and not r['onboarding_active'] and company_today(db)>=until:
+        r['stored_status']=r['status'];r['status']='Active'
     if u['role']!='hr' and r['id']!=u['employee_id']:
         for key in ['salary_cents','annual_days','phone','email','skills']:
             r.pop(key,None)
@@ -99,6 +125,9 @@ def task_deadline_status(db, task, today=None, now=None):
 def list_resource(db,u,table):
     require(u['role']!='admin','System administrators do not have employee-record access.')
     require(table in CATALOG,'Unknown module',404)
+    if u['role'] in ('sales','sales_manager','sales_leader','accountant','project_manager','executive'):
+        from .access import hr_modules
+        require(table in hr_modules(u['role']),'This HR module is not authorized for your role.')
     spec=CATALOG[table]
     data=rows(db,f'SELECT * FROM {table} ORDER BY id DESC')
     if u['role']=='owner' and table=='contracts':return data
@@ -116,6 +145,8 @@ def list_resource(db,u,table):
                 task['task_category']='Project task' if task.get('project_id') else 'Internal company task'
                 task['deadline_status']=task_deadline_status(db,task)
         if table in ('payroll','salary_components') and u['role']!='hr':
+            data=[r for r in data if r['employee_id']==u['employee_id']]
+        if table=='resignations' and u['role']!='hr':
             data=[r for r in data if r['employee_id']==u['employee_id']]
     if spec.get('recruit'):
         require(u['role'] in ('hr','manager','leader'))
@@ -203,6 +234,8 @@ def validate(fields,payload,partial=False):
 def create_resource(db,u,table,p):
     require(u['role']!='admin','System administrators do not have employee-record access.')
     require(table in CATALOG,'Unknown module',404)
+    from .access import hr_modules
+    require(table in hr_modules(u['role']),'This HR module is not authorized for your role.')
     spec=CATALOG[table]
     require(u['role'] in spec.get('manage',[]) or spec.get('create_self'))
     p=dict(p)
@@ -217,6 +250,7 @@ def create_resource(db,u,table,p):
             eid=int(p.get('employee_id',u['employee_id'])) if table=='reports' and u['role'] in ('hr','manager','leader') else u['employee_id']
         if table!='tasks':check_employee(db,u,eid)
         v['employee_id']=eid
+    if table=='career_paths':require(v['from_position_id']!=v['to_position_id'] and v['minimum_proficiency']<=100 and float(v['minimum_months']).is_integer(),'Use different positions, a proficiency of 0?100, and whole tenure months.',400)
     if table=='employees':
         v['code']='NP-'+secrets.token_hex(3).upper()
         require(v['annual_days']<=366,'Annual entitlement must be at most 366.',400)
@@ -224,6 +258,7 @@ def create_resource(db,u,table,p):
             require(one(db,'SELECT id FROM teams WHERE id=? AND department_id=?',(v['team_id'],v['department_id'])),'Team must belong to the selected department.',400)
     if table=='leave_requests':
         prepare_leave(db,u,v)
+    if table=='salary_components':require_open_payroll_period(db,v['employee_id'],v['month']+'-01')
     if table in ('kpis','kpi_templates'):
         require(v['target']>0 and v['weight']>0,'Target and weight must be greater than zero.',400)
         if table=='kpis': v['status']='Proposed'
@@ -293,7 +328,7 @@ def prepare_leave(db,u,v):
     require(typ is not None,'Unknown request type.',400)
     s=settings(db)
     calendar_days=(end-start).days+1
-    counted_days=sum((start+timedelta(days=n)).weekday() in s['workdays'] for n in range(calendar_days)) if s.get('leave_count_mode')=='workdays' else calendar_days
+    counted_days=sum(scheduled_day(db,start+timedelta(days=n)) for n in range(calendar_days)) if s.get('leave_count_mode')=='workdays' else calendar_days
     max_units=counted_days if typ['unit']=='days' else 24*calendar_days
     require(0<v['units']<=max_units,'Requested units exceed the selected date range.',400)
     if typ['unit']=='days': require(v['units']==max_units,'Units must match the inclusive date range under the configured calendar/workday policy.',400)
@@ -309,11 +344,14 @@ def ensure_balance(db,eid,year):
 def update_resource(db,u,table,ident,p):
     require(u['role']!='admin','System administrators do not have employee-record access.')
     require(table in CATALOG,'Unknown module',404)
+    from .access import hr_modules
+    require(table in hr_modules(u['role']),'This HR module is not authorized for your role.')
     from .people_policy import before_update, after_update
     previous=before_update(db,u,table,ident,p)
     visible={r['id']:r for r in list_resource(db,u,table)}
     require(ident in visible,'Record not found or outside your scope.',404)
     r=visible[ident]
+    if table=='salary_components':require_open_payroll_period(db,r['employee_id'],r['month']+'-01')
     manager=u['role'] in CATALOG[table].get('manage',[])
     special={
       'tasks':[('status','Status','select',['To do','In progress','Under Review','Revision Required','Approved','Completed','Blocked','Done']),('actual_hours','Actual hours','number',None),('delay_context','Delay context / external dependencies','textarea',None)],
@@ -388,6 +426,7 @@ def decide_leave(db,u,ident,p):
         notify(db,next_step['approver_id'],'Request awaiting review',f'Leave request #{ident} reached your approval stage.')
         return {'message':'Approval stage recorded. The next approver has been notified.'}
     if decision=='Approved':
+        require_open_payroll_period(db,r['employee_id'],r['start'],r['end'])
         typ=one(db,'SELECT * FROM leave_types WHERE id=?',(r['type_id'],))
         if typ['deduct_balance']:
             year=date.fromisoformat(r['start']).year
@@ -397,10 +436,12 @@ def decide_leave(db,u,ident,p):
         start,end=date.fromisoformat(r['start']),date.fromisoformat(r['end'])
         s=settings(db)
         for n in range((end-start).days+1):
-            if typ['unit']=='days' and s.get('leave_count_mode')=='workdays' and (start+timedelta(days=n)).weekday() not in s['workdays']: continue
+            if typ['unit']=='days' and s.get('leave_count_mode')=='workdays' and not scheduled_day(db,start+timedelta(days=n)): continue
             day=(start+timedelta(days=n)).isoformat()
             db.execute('INSERT OR IGNORE INTO attendance(employee_id,day,work_mode) VALUES(?,?,?)',(r['employee_id'],day,'Office'))
             db.execute('UPDATE attendance SET exception=? WHERE employee_id=? AND day=?',('Approved: '+typ['name'],r['employee_id'],day))
+            if typ['unit']=='days':
+                db.execute("UPDATE attendance SET review_status='Excused' WHERE employee_id=? AND day=?",(r['employee_id'],day))
     db.execute('UPDATE leave_requests SET status=?,decision_reason=? WHERE id=?',(decision,reason,ident))
     if step: db.execute('UPDATE leave_approval_steps SET status=? WHERE id=?',(decision,step['id']))
     if decision=='Rejected': db.execute("UPDATE leave_approval_steps SET status='Skipped' WHERE request_id=? AND status='Queued'",(ident,))
@@ -429,17 +470,22 @@ def review_attendance(db,u,ident,decision,reason,employee_id=None,day=None):
         require(target is not None,'Employee not found.',404)
         today=company_today(db)
         require(today-timedelta(days=30)<=absent_day<today,'Only a past absence within the current review window may be recorded.',400)
-        require(absent_day.weekday() in settings(db)['workdays'] and target['joined']<=absent_day.isoformat(),'This is not a scheduled workday for the employee.',400)
+        require(scheduled_day(db,absent_day) and target['joined']<=absent_day.isoformat(),'This is not a scheduled workday for the employee.',400)
+        require(not one(db,"SELECT id FROM users WHERE employee_id=? AND role IN ('owner','admin')",(target['id'],)),'This account does not participate in attendance.')
         require(not one(db,'SELECT id FROM attendance WHERE employee_id=? AND day=?',(target['id'],absent_day.isoformat())),'Attendance already exists for this employee and day.',409)
         approved=one(db,"SELECT l.id FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE l.employee_id=? AND l.status='Approved' AND l.start<=? AND l.end>=? AND t.unit='days'",(target['id'],absent_day.isoformat(),absent_day.isoformat()))
         require(not approved,'Approved leave covers this workday.',409)
         new_id=insert(db,'attendance',dict(employee_id=target['id'],day=absent_day.isoformat(),work_mode=target['work_mode'],exception='No recorded attendance — HR review required',classification='Absent',review_status='Pending'))
         record=one(db,'SELECT * FROM attendance WHERE id=?',(new_id,))
-    require(record['classification']=='Absent' and record['review_status']=='Pending','Only pending absence classifications can be reviewed.',409)
+        ident=new_id
+    require_open_payroll_period(db,record['employee_id'],record['day'])
+    require(not approved_leave(db,record['employee_id'],record['day']),'Approved leave covers this day.',409)
+    require(scheduled_day(db,record['day']),'This is not a scheduled workday.',409)
+    require(attendance_classification(db,record)=='Absent' and record['review_status'] not in ('Excused','Unauthorized'),'Only pending absence classifications can be reviewed.',409)
     require(decision in ('Excused','Unauthorized'),'Choose Excused or Unauthorized.',400)
     reason=str(reason or '').strip()
     require(1<=len(reason)<=2000,'A review reason is required.',400)
-    db.execute('UPDATE attendance SET review_status=? WHERE id=?',(decision,ident))
+    db.execute("UPDATE attendance SET classification='Absent',review_status=? WHERE id=?",(decision,ident))
     insert(db,'attendance_reviews',dict(attendance_id=ident,reviewer_user_id=u['id'],decision=decision,reason=reason))
     insert(db,'audit_logs',dict(actor_id=u['id'],entity='attendance',record_id=ident,action='Absence '+decision.lower(),after_data=json.dumps({'employee_id':record['employee_id'],'day':record['day'],'decision':decision}),reason=reason))
     return {'message':'Attendance review recorded; the decision is auditable.'}
@@ -450,6 +496,7 @@ def attendance_action(db,u,p):
     s=settings(db)
     geo=s['geofence']
     if geo['enabled'] and (emp['work_mode']=='Office' or geo['apply_remote']):
+        require((geo['latitude'],geo['longitude'])!=(0,0),'Company attendance location has not been verified. Ask HR to configure it.',409)
         try:
             lat,lon=float(p['latitude']),float(p['longitude'])
             require(math.isfinite(lat) and math.isfinite(lon) and -90<=lat<=90 and -180<=lon<=180,'Invalid coordinates.',400)
@@ -459,8 +506,11 @@ def attendance_action(db,u,p):
         require(distance<=geo['radius_m'],'You are outside the approved attendance location.',400)
     now=company_now(db).replace(microsecond=0)
     day=now.date().isoformat()
+    require_open_payroll_period(db,u['employee_id'],day)
     r=one(db,'SELECT * FROM attendance WHERE employee_id=? AND day=?',(u['employee_id'],day))
     if p.get('action')=='in':
+        require(not approved_leave(db,u['employee_id'],day),'Approved full-day leave covers today. Ask HR to correct the leave record before checking in.',409)
+        require(not one(db,'SELECT id FROM holidays WHERE day=?',(day,)),'Today is a configured company holiday.',409)
         require(not r or not r['check_in'],'You have already checked in today.',409)
         classification=classify_attendance(db,now.isoformat())
         late=max(0,int((now-now.replace(hour=9,minute=0,second=0,microsecond=0)).total_seconds()/60)-15) if classification=='Late' else 0
@@ -470,7 +520,9 @@ def attendance_action(db,u,p):
         db.execute('UPDATE attendance SET check_in=?,late_minutes=?,exception=?,classification=?,review_status=? WHERE employee_id=? AND day=?',(now.isoformat(),late,exception,classification,review_status,u['employee_id'],day))
     elif p.get('action')=='out':
         require(r and r['check_in'] and not r['check_out'],'Check in first; checkout can be recorded once.',409)
-        minutes=max(0,int((now-datetime.fromisoformat(r['check_in'])).total_seconds()/60))
+        check_in=datetime.fromisoformat(r['check_in'])
+        if check_in.tzinfo is None:check_in=check_in.replace(tzinfo=company_zone(db))
+        minutes=max(0,int((now-check_in).total_seconds()/60))
         early=max(0,int((now.replace(hour=18,minute=0,second=0,microsecond=0)-now).total_seconds()/60)) if emp['work_mode']!='Flexible' else 0
         overtime=max(0,minutes-(s['end_hour']-s['start_hour'])*60)
         db.execute('UPDATE attendance SET check_out=?,minutes=?,early_minutes=?,overtime_minutes=? WHERE id=?',(now.isoformat(),minutes,early,overtime,r['id']))
@@ -478,6 +530,59 @@ def attendance_action(db,u,p):
     return {'message':'Attendance recorded.'}
 
 def money(value): return int(Decimal(str(value)).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+
+def correct_attendance(db,u,p):
+    require(u['role']=='hr','Only HR may correct attendance.')
+    record=one(db,'SELECT * FROM attendance WHERE id=?',(int(p.get('id',0)),))
+    require(record is not None,'Attendance record not found.',404)
+    require_open_payroll_period(db,record['employee_id'],record['day'])
+    reason=str(p.get('reason','')).strip();require(1<=len(reason)<=2000,'A documented correction reason is required.',400)
+    zone=company_zone(db)
+    def instant(key):
+        value=p.get(key,record.get(key))
+        if not value:return None
+        try:result=datetime.fromisoformat(value)
+        except (TypeError,ValueError):raise Problem('Enter a valid local check-in/check-out timestamp.',400)
+        result=result.replace(tzinfo=zone) if result.tzinfo is None else result.astimezone(zone)
+        require(result.date().isoformat()==record['day'],'Corrections must stay within the recorded company workday.',400)
+        return result
+    check_in,check_out=instant('check_in'),instant('check_out')
+    require(check_in is not None and (check_out is None or check_out>=check_in),'Check-out must follow check-in.',400)
+    require(not approved_leave(db,record['employee_id'],record['day']),'Resolve the approved full-day leave before entering attendance.',409)
+    classification=classify_attendance(db,check_in.isoformat())
+    minutes=int((check_out-check_in).total_seconds()/60) if check_out else 0
+    value=dict(check_in=check_in.isoformat(),check_out=check_out.isoformat() if check_out else None,minutes=minutes,classification=classification,review_status='Pending' if classification=='Absent' else 'Not required',late_minutes=max(0,check_in.hour*60+check_in.minute-555) if classification=='Late' else 0,early_minutes=max(0,1080-check_out.hour*60-check_out.minute) if check_out else 0,overtime_minutes=max(0,minutes-540),exception='HR correction: '+reason)
+    db.execute('UPDATE attendance SET '+','.join(k+'=?' for k in value)+' WHERE id=?',list(value.values())+[record['id']])
+    insert(db,'attendance_corrections',dict(attendance_id=record['id'],actor_id=u['id'],before_data=json.dumps(record),after_data=json.dumps(value),reason=reason))
+    from .business import audit
+    audit(db,u,'attendance',record['id'],'Corrected',record,value,reason)
+    return {'message':'Attendance corrected with the original values retained in the audit trail.'}
+
+def import_attendance(db,u,p):
+    require(u['role']=='hr','Only HR may import reviewed attendance timesheets.')
+    source=str(p.get('csv',''));require(0<len(source)<=500000,'Upload a CSV of at most 500 KB.',400)
+    reader=csv.DictReader(io.StringIO(source.lstrip('\ufeff')))
+    require({'employee_id','day','check_in','check_out'}<=set(reader.fieldnames or []),'CSV columns must include employee_id,day,check_in,check_out.',400)
+    data=list(reader);require(1<=len(data)<=1000,'Import 1–1000 rows.',400)
+    reason=str(p.get('reason','')).strip();require(1<=len(reason)<=2000,'Document the source and authorization for the import.',400)
+    db.execute('SAVEPOINT attendance_csv')
+    try:
+        seen=set()
+        for index,row in enumerate(data,2):
+            eid=int(row['employee_id']);day=date.fromisoformat(row['day']).isoformat()
+            require((eid,day) not in seen,'Duplicate employee/day at CSV row '+str(index)+'.',400);seen.add((eid,day))
+            employee=one(db,'SELECT id,joined,work_mode FROM employees WHERE id=?',(eid,))
+            require(employee and employee['joined']<=day,'Invalid employee or pre-employment date at CSV row '+str(index)+'.',400)
+            require(not one(db,"SELECT id FROM users WHERE employee_id=? AND role IN ('owner','admin')",(eid,)),'Owner/system-admin attendance cannot be imported.',403)
+            require(day<=company_today(db).isoformat(),'Future attendance cannot be imported.',400)
+            require_open_payroll_period(db,eid,day)
+            existing=one(db,'SELECT id FROM attendance WHERE employee_id=? AND day=?',(eid,day))
+            aid=existing['id'] if existing else insert(db,'attendance',dict(employee_id=eid,day=day,work_mode=employee['work_mode']))
+            correct_attendance(db,u,dict(id=aid,check_in=row['check_in'],check_out=row['check_out'],reason='Timesheet import: '+reason))
+        db.execute('RELEASE attendance_csv')
+    except Exception:
+        db.execute('ROLLBACK TO attendance_csv');db.execute('RELEASE attendance_csv');raise
+    return {'message':str(len(data))+' attendance rows imported with an audit trail. Absences still require HR review.','count':len(data)}
 
 def simulate_payroll(db,eid,month):
     require(bool(re.fullmatch(r'\d{4}-(0[1-9]|1[0-2])',month)),'Invalid payroll month.',400)
@@ -495,15 +600,17 @@ def simulate_payroll(db,eid,month):
         late_minutes+=max(0,record['late_minutes']-approved)
     # Late arrival is recorded but is not a payroll deduction in this policy.
     late=0
-    unauthorized_absences=sum(record['classification']=='Absent' and record['review_status']=='Unauthorized' for record in attendance)
+    unauthorized_absences=sum(attendance_classification(db,record)=='Absent' and record['review_status']=='Unauthorized' and scheduled_day(db,record['day']) for record in attendance)
     absence_days=int(s.get('absence_deduction_days',4))
     absence_deduction=money(Decimal(emp['salary_cents'])/Decimal(str(s['working_days']))*Decimal(absence_days*unauthorized_absences))
     unpaid=Decimal(0)
-    for r in rows(db,"SELECT l.*,t.payroll_factor FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE l.employee_id=? AND l.status='Approved' AND t.payroll_factor>0",(eid,)):
+    for r in rows(db,"SELECT l.*,t.payroll_factor,t.unit FROM leave_requests l JOIN leave_types t ON t.id=l.type_id WHERE l.employee_id=? AND l.status='Approved' AND t.payroll_factor>0",(eid,)):
         start,end=date.fromisoformat(r['start']),date.fromisoformat(r['end'])
         days=(end-start).days+1
-        in_month=sum((start+timedelta(days=n)).strftime('%Y-%m')==month for n in range(days))
-        unpaid+=Decimal(str(r['units']))*Decimal(in_month)/Decimal(days)*Decimal(str(r['payroll_factor']))
+        counted=[start+timedelta(days=n) for n in range(days) if s.get('leave_count_mode')!='workdays' or scheduled_day(db,start+timedelta(days=n))]
+        in_month=sum(d.strftime('%Y-%m')==month for d in counted)
+        units=Decimal(str(r['units']))/(Decimal(s['end_hour']-s['start_hour']) if r['unit']=='hours' else 1)
+        unpaid+=units*Decimal(in_month)/Decimal(max(1,len(counted)))*Decimal(str(r['payroll_factor']))
     leave_deduction=money(Decimal(emp['salary_cents'])/Decimal(str(s['working_days']))*unpaid)
     adds=sum(c['amount_cents'] for c in components if c['kind']=='Addition')+overtime
     deductions=sum(c['amount_cents'] for c in components if c['kind']=='Deduction')+late+leave_deduction+absence_deduction
@@ -522,13 +629,22 @@ def payroll_action(db,u,p):
             old=one(db,'SELECT * FROM payroll WHERE employee_id=? AND month=?',(e['id'],month))
             if old and old['status']=='Approved': continue
             v=simulate_payroll(db,e['id'],month)
-            if old: db.execute('DELETE FROM payroll WHERE id=?',(old['id'],))
-            insert(db,'payroll',v)
+            if old:db.execute('UPDATE payroll SET '+','.join(k+'=?' for k in v)+' WHERE id=?',list(v.values())+[old['id']])
+            else:insert(db,'payroll',v)
             count+=1
         return {'message':f'{count} payslips prepared for review.'}
     if p.get('action')=='approve':
         r=one(db,'SELECT * FROM payroll WHERE id=?',(int(p['id']),))
         require(r and r['status']=='Draft','Only draft payroll can be approved.',409)
+        unresolved=rows(db,"SELECT * FROM attendance WHERE employee_id=? AND day LIKE ?",(r['employee_id'],r['month']+'%'))
+        unresolved=[{'id':a['id'],'day':a['day']} for a in unresolved if attendance_classification(db,a)=='Absent' and a['review_status'] not in ('Excused','Unauthorized') and scheduled_day(db,a['day'])]
+        pending_leave=rows(db,"SELECT id,start,end FROM leave_requests WHERE employee_id=? AND status='Pending' AND substr(start,1,7)<=? AND substr(end,1,7)>=?",(r['employee_id'],r['month'],r['month']))
+        if unresolved or pending_leave:
+            error=Problem('Resolve pending attendance/leave decisions for employee #'+str(r['employee_id'])+' before approving '+r['month']+'. Attendance IDs: '+', '.join(str(a['id']) for a in unresolved)+'. Leave IDs: '+', '.join(str(a['id']) for a in pending_leave)+'.',409)
+            error.details={'employee_id':r['employee_id'],'attendance':unresolved,'leave_requests':pending_leave}
+            raise error
+        value=simulate_payroll(db,r['employee_id'],r['month'])
+        db.execute('UPDATE payroll SET '+','.join(k+'=?' for k in value)+' WHERE id=?',list(value.values())+[r['id']])
         db.execute("UPDATE payroll SET status='Approved' WHERE id=?",(r['id'],))
         from .business import audit
         audit(db,u,'payroll',r['id'],'Approved',r,{'status':'Approved'})
@@ -556,18 +672,21 @@ def lookups(db,u):
     directory=[dict(id=r['id'],name=r['name']) for r in rows(db,'SELECT id,name FROM employees ORDER BY name') if r['id'] in visible]
     return {'departments':rows(db,'SELECT id,name FROM departments'),'positions':rows(db,'SELECT id,title FROM positions'),'teams':rows(db,'SELECT id,name,department_id,leader_id,manager_id FROM teams'),'employees':directory, 'scoped_employees':[r for r in directory if r['id'] in ids], 'leave_types':rows(db,'SELECT * FROM leave_types'),'courses':rows(db,'SELECT * FROM courses'),'periods':rows(db,'SELECT * FROM performance_periods'),'seniorities':rows(db,'SELECT * FROM seniorities'),'case_handlers':rows(db,"SELECT u.id,e.name FROM users u JOIN employees e ON e.id=u.employee_id WHERE u.role='hr'") if u['role']=='hr' else []}
 
-def dashboard(db,u):
+def dashboard(db,u,filters=None):
     if u['role']=='admin':return {'system_admin':True}
-    ids=scope_ids(db,u)
+    from .insights import filtered_people, performance_insights
+    filters=filters or {}
+    ids=filtered_people(db,u,filters)
     aggregate=u['role']=='hr'
     emps=rows(db,'SELECT id,department_id,status,joined,salary_cents FROM employees')
-    scoped=emps if aggregate else [r for r in emps if r['id'] in ids]
+    scoped=[r for r in emps if r['id'] in ids]
     sids={r['id'] for r in scoped}
     active=[e for e in scoped if e['status']!='Archived']
     today=company_today(db).isoformat()
     non_attendance_ids={r['employee_id'] for r in rows(db,"SELECT employee_id FROM users WHERE role IN ('owner','admin')")}
     att=[r for r in rows(db,'SELECT * FROM attendance') if r['employee_id'] in sids and r['employee_id'] not in non_attendance_ids]
-    today_att=[r for r in att if r['day']==today and r['check_in']]
+    for r in att:r['classification']=attendance_classification(db,r)
+    today_att=[r for r in att if r['day']==today and r['classification'] in ('Normal','Late')]
     leaves=[r for r in rows(db,'SELECT * FROM leave_requests') if r['employee_id'] in sids]
     tasks=list_resource(db,u,'tasks')
     plans=[r for r in rows(db,'SELECT * FROM learning_plans') if r['employee_id'] in sids]
@@ -575,7 +694,7 @@ def dashboard(db,u):
     current_period=one(db,'SELECT id FROM performance_periods WHERE start<=? AND end>=? ORDER BY start DESC LIMIT 1',(today,today))
     current_kpis=[k for k in kpis if current_period and k['period_id']==current_period['id'] and k['status']=='Approved']
     weight=sum(k['weight'] for k in current_kpis)
-    score=round(sum(min(1,k['actual']/k['target'] if k['direction']=='higher' else k['target']/max(k['actual'],.001)) * k['weight'] for k in current_kpis)/weight*100) if weight else 0
+    score=round(sum(min(1,k['actual']/k['target'] if k['direction']=='higher' else k['target']/max(k['actual'],.001)) * k['weight'] for k in current_kpis)/weight*100) if weight else None
     dep=[]
     for d in rows(db,'SELECT * FROM departments'):
         members=[e for e in active if e['department_id']==d['id']]
@@ -587,7 +706,7 @@ def dashboard(db,u):
     trend=[]
     for n in range(6,-1,-1):
         day=(company_today(db)-timedelta(days=n)).isoformat()
-        trend.append(dict(day=day,present=sum(r['day']==day and bool(r['check_in']) for r in att),late=sum(r.get('classification')=='Late' for r in att if r['day']==day)))
+        trend.append(dict(day=day,present=sum(r['day']==day and r['classification'] in ('Normal','Late') for r in att),late=sum(r.get('classification')=='Late' for r in att if r['day']==day)))
     ensure_balance(db,u['employee_id'],company_today(db).year)
     balance=one(db,'SELECT * FROM leave_balances WHERE employee_id=? AND year=?',(u['employee_id'],company_today(db).year))
     contracts=[c for c in rows(db,'SELECT * FROM contracts') if c['employee_id'] in sids and (c['end']<= (company_today(db)+timedelta(days=30)).isoformat() or today<=c['probation_end']<=(company_today(db)+timedelta(days=30)).isoformat())]
@@ -596,7 +715,12 @@ def dashboard(db,u):
     candidates=rows(db,'SELECT stage,COUNT(*) AS count FROM candidates GROUP BY stage') if aggregate else []
     payroll_total=sum(e['salary_cents'] for e in active) if aggregate else None
     result=dict(total_employees=len(active),present=len(today_att),pending=sum(r['status']=='Pending' for r in leaves),performance=score,leave_balance=balance['entitlement']-balance['used'],today=one(db,'SELECT * FROM attendance WHERE employee_id=? AND day=?',(u['employee_id'],today)),tasks_total=len(tasks),tasks_done=sum(t['status'] in ('Done','Completed','Approved') for t in tasks),overdue=sum(t['deadline_status']=='Overdue' for t in tasks),learning_progress=round(sum(p['progress'] for p in plans)/len(plans)) if plans else 0,departments=dep,attendance_trend=trend,contract_alerts=contracts,recruitment=candidates,payroll_total_cents=payroll_total,turnover_percent=round(100*archived/len(scoped),1) if scoped else 0,resignations=len(resignations),retention_reasons=[r['reason'] for r in resignations] if u['role']=='hr' else [],announcements=list_resource(db,u,'announcements')[:5],notifications=rows(db,'SELECT * FROM notifications WHERE employee_id=? ORDER BY id DESC LIMIT 20',(u['employee_id'],)),tasks=sorted(tasks,key=lambda t:t['due'])[:6],recognition=list_resource(db,u,'recognition')[:4])
-    result['contract_alert_count']=len(contracts)
+    result['absent']=len({r['employee_id'] for r in att if r['day']==today and r['classification']=='Absent'})
+    result['late']=len({r['employee_id'] for r in today_att if r['classification']=='Late'})
+    result['performance_trend']=performance_insights(db,u,filters)
+    from .access import hr_modules
+    if 'contracts' not in hr_modules(u['role']):result['contract_alerts']=[]
+    result['contract_alert_count']=len(result['contract_alerts'])
     if u['role']=='owner':
         result['contract_alerts']=[]
         result['tasks']=[t for t in result['tasks'] if t['employee_id']==u['employee_id']]

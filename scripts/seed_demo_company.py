@@ -23,7 +23,7 @@ def _read_existing_demo(path):
     db.row_factory = sqlite3.Row
     try:
         marker = db.execute("SELECT value FROM demo_company_meta WHERE key='seed_version'").fetchone()
-        if not marker or marker['value'] != 'northstar-demo-v1':
+        if not marker or marker['value'] not in ('northstar-demo-v1','northstar-demo-v2'):
             return None
         actual = check_demo_company(db)
         integrity = db.execute('PRAGMA integrity_check').fetchone()[0]

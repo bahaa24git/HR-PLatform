@@ -12,11 +12,11 @@ from datetime import datetime, timedelta
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 from . import db as database
 from .db import rows, one, ROOT, verify_password
 from .catalog import CATALOG
-from .service import Problem, require, settings, scope_ids, list_resource, create_resource, update_resource, decide_leave, attendance_action, review_attendance, grant_onboarding_exception, payroll_action, lookups, dashboard, check_employee
+from .service import Problem, require, validate, settings, scope_ids, list_resource, create_resource, update_resource, decide_leave, attendance_action, review_attendance, grant_onboarding_exception, payroll_action, lookups, dashboard, check_employee
 from .workflows import cases, survey, resignation_action, upload, documents, save_settings, provision, hire_candidate
 from .ai import ask, AGENTS, conversation_history
 from .insights import attendance_report, workforce, performance_insights, performance_note, apply_templates, training, assign_team
@@ -63,7 +63,7 @@ class Handler(BaseHTTPRequestHandler):
         token=cookie.get('hr_session')
         require(token is not None,'Please log in.',401)
         digest=hashlib.sha256(token.value.encode()).hexdigest()
-        u=one(db,"SELECT u.id,u.employee_id,u.email,u.role,e.name,e.department_id,e.status,e.position_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN employees e ON e.id=u.employee_id WHERE s.token_hash=? AND s.expires_at>? AND e.status!='Archived'",(digest,datetime.now().isoformat()))
+        u=one(db,"SELECT u.id,u.employee_id,u.email,u.role,e.name,e.department_id,e.status,e.position_id,e.work_mode FROM sessions s JOIN users u ON u.id=s.user_id JOIN employees e ON e.id=u.employee_id WHERE s.token_hash=? AND s.expires_at>? AND e.status!='Archived'",(digest,datetime.now().isoformat()))
         require(u is not None,'Your session has expired. Please log in.',401)
         if u['role']=='admin':
             u={k:u[k] for k in ('id','employee_id','email','role','name')}
@@ -108,12 +108,14 @@ class Handler(BaseHTTPRequestHandler):
             self.reply({'error':'Invalid request. Check the required fields and values.'},400)
         except Exception:
             db.rollback()
-            traceback.print_exc()
+            # Exception messages and tracebacks may contain private values.
+            print('Unhandled API error: '+str(type(__import__('sys').exception()).__name__),flush=True)
             self.reply({'error':'The operation failed. Please try again.'},500)
         finally: db.close()
 
     def api(self,db,method,path,p):
         parts=path.strip('/').split('/')[1:]
+        query={k:v[0] for k,v in parse_qs(urlsplit(self.path).query).items()}
         if path=='/api/health' and method=='GET':
             return {'status':'ok','database':bool(one(db,'SELECT version FROM schema_versions'))},None
         if path=='/api/login' and method=='POST':
@@ -149,32 +151,43 @@ class Handler(BaseHTTPRequestHandler):
             if u['role']=='owner':
                 from .business import analytics
                 return analytics(db,u),None
-            return dashboard(db,u),None
+            return dashboard(db,u,query),None
         if parts[0]=='resources' and len(parts)>=2:
             table=parts[1]
+            from .access import hr_modules
+            require(table in hr_modules(u['role']),'This HR module is not authorized for your role.')
             if method=='GET' and len(parts)==2: return list_resource(db,u,table),None
             if method=='POST' and len(parts)==2: return create_resource(db,u,table,p),None
             if method=='PATCH' and len(parts)==3: return update_resource(db,u,table,int(parts[2]),p),None
         if path=='/api/attendance':
             if method=='POST': return attendance_action(db,u,p),None
-            return attendance_report(db,u)['records'],None
-        if path=='/api/attendance-report' and method=='GET': return attendance_report(db,u),None
+            return attendance_report(db,u,query)['records'],None
+        if path=='/api/attendance-report' and method=='GET': return attendance_report(db,u,query),None
         if path=='/api/attendance-reviews':
             require(u['role']=='hr','Only HR may review attendance classifications.')
             if method=='GET':
-                pending=[r for r in attendance_report(db,u)['records'] if (r.get('id',0)<0 or (r.get('classification')=='Absent' and r.get('review_status')=='Pending'))]
+                pending=[r for r in attendance_report(db,u,query)['records'] if (r.get('id',0)<0 or (r.get('classification')=='Absent' and r.get('review_status')=='Pending'))]
                 names={r['id']:r['name'] for r in rows(db,'SELECT id,name FROM employees')}
                 return [{**r,'name':names.get(r['employee_id'],''),'missing':r['id']<0} for r in pending],None
             if method=='POST':return review_attendance(db,u,int(p.get('attendance_id') or 0),p.get('decision'),p.get('reason'),p.get('employee_id'),p.get('day')),None
+        if path=='/api/attendance-corrections' and method=='POST':
+            from .service import correct_attendance
+            return correct_attendance(db,u,p),None
+        if path=='/api/attendance-import' and method=='POST':
+            from .service import import_attendance
+            return import_attendance(db,u,p),None
         if path=='/api/onboarding-exceptions':
             if method=='GET':
                 require(u['role']=='hr','Only HR may view onboarding exceptions.')
                 return rows(db,'SELECT x.*,e.name AS employee FROM onboarding_exceptions x JOIN employees e ON e.id=x.employee_id ORDER BY x.id DESC'),None
             if method=='POST':return grant_onboarding_exception(db,u,p),None
         if path=='/api/workforce' and method=='GET': return workforce(db,u),None
-        if path=='/api/performance-insights' and method=='GET': return performance_insights(db,u),None
+        if path=='/api/performance-insights' and method=='GET': return performance_insights(db,u,query),None
         if path=='/api/performance-notes' and method=='POST': return performance_note(db,u,p),None
         if path=='/api/apply-kpi-templates' and method=='POST': return apply_templates(db,u,p),None
+        if path=='/api/career-readiness' and method=='GET':
+            from .insights import career_readiness
+            return career_readiness(db,u,query.get('employee_id')),None
         if path=='/api/training' and method in ('GET','POST'): return training(db,u,method,p),None
         if path=='/api/assign-team' and method=='POST': return assign_team(db,u,p),None
         if len(parts)==3 and parts[0]=='leave' and parts[2]=='decision' and method=='POST': return decide_leave(db,u,int(parts[1]),p),None
@@ -193,7 +206,8 @@ class Handler(BaseHTTPRequestHandler):
             ident=int(parts[1])
             require(ident in [d['id'] for d in documents(db,u)],'Document not found.',404)
             r=one(db,'SELECT * FROM documents WHERE id=?',(ident,))
-            data=(ROOT/'data/uploads'/r['storage_key']).read_bytes()
+            from .storage import uploaded_file
+            data=uploaded_file(db,'uploads',r['storage_key']).read_bytes()
             return data,{'Content-Type':r['mime'],'Content-Disposition':"attachment; filename*=UTF-8''"+__import__('urllib.parse',fromlist=['quote']).quote(r['name'])}
         if path=='/api/settings':
             if method=='GET':

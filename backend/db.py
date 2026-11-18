@@ -49,7 +49,7 @@ def password_hash(password, salt=None):
 def verify_password(password, hashed):
     return secrets.compare_digest(password_hash(password, hashed.split('$')[0]), hashed)
 
-def initialize(path=None, demo=True):
+def initialize(path=None, demo=False):
     path = Path(path or DB_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = connect(path)
@@ -61,7 +61,7 @@ def initialize(path=None, demo=True):
         db.executescript((ROOT / 'backend/migrations/003_approval_chains.sql').read_text(encoding='utf-8'))
     if not db.execute('SELECT version FROM schema_versions WHERE version=4').fetchone():
         db.executescript((ROOT / 'backend/migrations/004_hiring_link.sql').read_text(encoding='utf-8'))
-    for version,filename in [(5,'005_company_platform.sql'),(6,'006_people_governance.sql'),(7,'007_delivery_and_reporting.sql'),(8,'008_case_visibility.sql'),(9,'009_lead_status_configuration.sql'),(10,'010_advisor_history.sql'),(11,'011_access_attendance_demo.sql')]:
+    for version,filename in [(5,'005_company_platform.sql'),(6,'006_people_governance.sql'),(7,'007_delivery_and_reporting.sql'),(8,'008_case_visibility.sql'),(9,'009_lead_status_configuration.sql'),(10,'010_advisor_history.sql'),(11,'011_access_attendance_demo.sql'),(12,'012_audit_integrity.sql'),(13,'013_contract_invoices.sql'),(14,'014_career_paths.sql')]:
         if not db.execute('SELECT version FROM schema_versions WHERE version=?',(version,)).fetchone():
             backup_path=path.parent/'backups'/f'{path.stem}-before-v{version}.sqlite3'
             if str(path)!=':memory:':

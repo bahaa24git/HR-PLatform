@@ -3,6 +3,13 @@ import json
 from .db import rows, one, insert
 
 def configure(db):
+    db.execute('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)',('approval_role',json.dumps('hr')))
+    first_hr_role=not one(db,"SELECT id FROM roles WHERE id='hr'")
+    for role,label in [('owner','Company Owner'),('hr','HR Administrator'),('manager','Department Manager'),('leader','Team Leader'),('employee','Employee')]:
+        db.execute('INSERT OR IGNORE INTO roles(id,label) VALUES(?,?)',(role,label))
+    for permission in ('settings','case_handle'):
+        db.execute('INSERT OR IGNORE INTO permissions(id) VALUES(?)',(permission,))
+        if first_hr_role:db.execute('INSERT OR IGNORE INTO role_permissions(role_id,permission_id) VALUES(?,?)',('hr',permission))
     db.execute('INSERT OR IGNORE INTO monthly_survey_receipts(user_id,month,survey_id) SELECT r.user_id,substr(s.start,1,7),r.survey_id FROM survey_receipts r JOIN surveys s ON s.id=r.survey_id ORDER BY s.id')
     workflows={'Content calendar':['Content topics','Channel and audience','Approval and publishing plan'],'Copy / caption':['Copy and captions','Brand voice','Call to action'],'Design brief':['Creative direction','Brand references','Required dimensions and formats'],'Design draft':['Design rationale','Brief compliance','Revision notes'],'Campaign setup':['Targeting and objective','Budget authorization reference','Measurement and optimization plan'],'Campaign report':['Results and attribution limits','Budget performance','Optimization actions'],'Shoot / footage':['Shoot location and schedule','Equipment and technical requirements','Shot list and footage completeness'],'Video edit':['Editing requirements','Technical format and duration','Revision and export notes'],'Reel / script':['Script and hook','Creative references','Production and editing notes'],'PR coverage':['Outreach and media relations','Coverage references','Event or campaign outcomes'],'Operations handover':['Resource coordination','Dependencies and blockers','Handover and issue resolution']}
     for name,fields in workflows.items():db.execute('INSERT OR IGNORE INTO delivery_workflows(name,fields) VALUES(?,?)',(name,json.dumps(fields)))
