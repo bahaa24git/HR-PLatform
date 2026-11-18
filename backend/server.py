@@ -248,7 +248,7 @@ class Handler(BaseHTTPRequestHandler):
         raise Problem('Endpoint not found.',404)
 
     def static(self,path):
-        files={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/styles.css':'styles.css','/ui.js':'ui.js','/business-ui.js':'business-ui.js','/people-ui.js':'people-ui.js','/translations.js':'translations.js','/report-format.js':'report-format.js'}
+        files={'/':'index.html','/index.html':'index.html','/app.js':'app.js','/styles.css':'styles.css','/dark-workspace.css':'dark-workspace.css','/ui.js':'ui.js','/business-ui.js':'business-ui.js','/people-ui.js':'people-ui.js','/translations.js':'translations.js','/report-format.js':'report-format.js'}
         if path not in files: return self.reply({'error':'Not found'},404)
         target=ROOT/'frontend'/files[path]
         payload=target.read_bytes()
