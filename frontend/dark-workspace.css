@@ -9,12 +9,11 @@
   --paper: #222225;
   --soft: #29292d;
   color: var(--ink);
-  background: #faf6f4;
+  background: #151517;
 }
 body {
-  padding: 20px;
-  background: radial-gradient(ellipse at top left, #f8ddca, transparent 48%),
-    radial-gradient(ellipse at bottom right, #ede7f6, transparent 45%), #fcfbfb;
+  padding: 0;
+  background: #151517;
   font-size: 13px;
 }
 ::selection { background: #6851a6; color: #fff; }
@@ -24,21 +23,20 @@ h1, h2, h3, h4 { color: #ededf0; }
 a { color: #bfaaf5; }
 .shell {
   grid-template-columns: 224px minmax(0, 1fr);
-  min-height: calc(100vh - 40px);
+  min-height: 100vh;
   background: #151517;
-  border: 5px solid #fff;
-  border-radius: 32px;
+  border: 0;
+  border-radius: 0;
   overflow: clip;
   box-shadow: 0 12px 50px #2c21330b;
 }
 .sidebar {
-  inset-block: 25px;
-  inset-inline-start: 25px;
+  inset-block: 0;
+  inset-inline-start: 0;
   width: 224px;
   padding: 23px 12px 13px;
   background: #202022;
-  border-start-start-radius: 27px;
-  border-end-start-radius: 27px;
+  border-radius: 0;
   color: #a6a6ad;
 }
 .brand { font-size: 21px; padding: 0 10px 21px; gap: 9px; }
@@ -212,7 +210,7 @@ tbody tr:hover { background: #29262f; }
 .report-document .report-methodology, .report-document .report-limitations, .report-document .report-kpis > div { background: #eeebf4; color: #5d506c; }
 .report-preview-tools { border-color: #44384f; }
 .report-preview-tools label, .report-preview-notes { color: #beb0cd; }
-.login { min-height: calc(100vh - 40px); border: 5px solid white; border-radius: 32px; overflow: hidden; }
+.login { min-height: 100vh; border: 0; border-radius: 0; overflow: hidden; }
 .login-story { background: radial-gradient(ellipse at bottom left, #423049, transparent 70%), #1d1c21; }
 .login-story h1 { color: #f0eaf5; }
 .login-story > p { color: #afa2bb; }
@@ -251,4 +249,20 @@ tbody tr:hover { background: #29262f; }
   :root { color-scheme: light; }
   body { padding: 0; background: white; }
   .report-document { color: #272330; background: white; }
+}
+
+/* Expandable navigation sections with nested links. */
+.nav-group { margin-block: 8px; }
+.nav-group > summary { display:flex; align-items:center; justify-content:space-between; gap:8px; list-style:none; cursor:pointer; user-select:none; padding:8px 6px; margin:8px 4px 3px; border-radius:5px; }
+.nav-group > summary::-webkit-details-marker { display:none; }
+.nav-group > summary:hover { background:#29292d; color:#c9c4d0; }
+.nav-group > summary .icon { width:12px; height:12px; transition:transform .15s ease; }
+.nav-group:not([open]) > summary .icon { transform:rotate(-90deg); }
+[dir=rtl] .nav-group:not([open]) > summary .icon { transform:rotate(90deg); }
+.nav-group-links { margin-inline:9px 0; padding-inline-start:7px; border-inline-start:1px solid #353238; }
+.shell.collapsed .nav-group > summary { display:none; }
+.shell.collapsed .nav-group-links { margin:0; padding:0; border:0; }
+@media(max-width:760px) {
+ .shell.collapsed .nav-group > summary { display:flex; }
+ .shell.collapsed .nav-group-links { margin-inline:9px 0; padding-inline-start:7px; border-inline-start:1px solid #353238; }
 }
