@@ -1,5 +1,22 @@
 const {test,expect}=require('@playwright/test');
 
+test('project risk View dialog has readable detail labels and values',async({page})=>{
+ await page.goto('/');await page.locator('#email').fill('owner@demo.local');await page.locator('#login-form button[type=submit]').click();await expect(page.locator('.shell')).toBeVisible();
+ const id=123456;
+ const record={id,project_id:999,title:'Client handover access',severity:'Low',mitigation:'Verify client access and retain the approved handover checklist.',owner_id:1,status:'Closed'};
+ // This test checks presentation only; do not alter the shared report fixture's authorization scope.
+ await page.route('**/api/business/project_risks',route=>route.fulfill({json:[record]}));
+ await page.route('**/api/business/project_risks/'+id,route=>route.fulfill({json:{record,related:{},history:[],custom_fields:[],attachments:[]}}));
+ await page.locator('.sidebar [data-page=project_risks]').click();await page.locator(`button.button[data-action=b-view][data-id="${id}"]`).click();
+ await expect(page.locator('.modal .detail-grid')).toContainText('Verify client access');
+ const ratios=await page.locator('.modal .detail-item').evaluateAll(cards=>{
+  const luminance=color=>{const rgb=color.match(/[\d.]+/g).slice(0,3).map(v=>{v=Number(v)/255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;});return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};
+  return cards.flatMap(card=>['dt','dd'].map(selector=>{const foreground=luminance(getComputedStyle(card.querySelector(selector)).color),background=luminance(getComputedStyle(card).backgroundColor);return (Math.max(foreground,background)+.05)/(Math.min(foreground,background)+.05);}));
+ });
+ expect(ratios.length).toBeGreaterThan(0);for(const ratio of ratios)expect(ratio).toBeGreaterThanOrEqual(4.5);
+ await page.screenshot({path:'test-results/dark-project-risk-details.png',animations:'disabled'});
+});
+
 test('sidebar sections expand independently and the white frame is removed',async({page})=>{
  await page.goto('/');await page.locator('#login-form button[type=submit]').click();
  await expect(page.locator('.shell')).toBeVisible();

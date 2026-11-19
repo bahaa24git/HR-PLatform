@@ -68,9 +68,10 @@ def scope_ids(db,u):
     if u['role'] in ('sales_leader','sales_manager'):
         from .business import commercial_people
         return list(commercial_people(db,u))
-    if u['role']=='manager': return [r['id'] for r in rows(db,'SELECT id FROM employees WHERE department_id=?',(u['department_id'],))]
-    if u['role']=='leader': return [r['id'] for r in rows(db,'SELECT e.id FROM employees e LEFT JOIN teams t ON t.id=e.team_id WHERE COALESCE(t.leader_id,e.leader_id)=? OR e.id=?',(u['employee_id'],u['employee_id']))]
-    return [u['employee_id']]
+    granted={r['id'] for r in rows(db,'SELECT id FROM employees WHERE team_id IN (SELECT team_id FROM team_access WHERE user_id=?)',(u['id'],))} if u['role'] in ('manager','leader','project_manager') else set()
+    if u['role']=='manager': return sorted(granted|{r['id'] for r in rows(db,'SELECT id FROM employees WHERE department_id=?',(u['department_id'],))})
+    if u['role']=='leader': return sorted(granted|{r['id'] for r in rows(db,'SELECT e.id FROM employees e LEFT JOIN teams t ON t.id=e.team_id WHERE COALESCE(t.leader_id,e.leader_id)=? OR e.id=?',(u['employee_id'],u['employee_id']))})
+    return sorted(granted|{u['employee_id']})
 
 def check_employee(db,u,eid):
     require(u['role']!='admin','System administrators do not have employee-record access.')
@@ -347,9 +348,9 @@ def update_resource(db,u,table,ident,p):
     from .access import hr_modules
     require(table in hr_modules(u['role']),'This HR module is not authorized for your role.')
     from .people_policy import before_update, after_update
-    previous=before_update(db,u,table,ident,p)
     visible={r['id']:r for r in list_resource(db,u,table)}
     require(ident in visible,'Record not found or outside your scope.',404)
+    previous=before_update(db,u,table,ident,p)
     r=visible[ident]
     if table=='salary_components':require_open_payroll_period(db,r['employee_id'],r['month']+'-01')
     manager=u['role'] in CATALOG[table].get('manage',[])

@@ -35,9 +35,10 @@ def bootstrap(db,u):
     return {'user':u,'catalog':{k:v for k,v in CATALOG.items() if k in hr_modules(u['role'])},'business_catalog':catalog,'allowed_pages':allowed_pages(db,u,catalog),'lookups':look,'settings':config,'agents':AGENTS,'ai':configuration(),'report_templates':templates,'monthly_survey_submitted':bool(one(db,'SELECT 1 FROM monthly_survey_receipts WHERE user_id=? AND month=?',(u['id'],company_today(db).strftime('%Y-%m'))))}
 
 def attachment(db,u,method,entity,ident,p):
-    b.record(db,u,entity,ident)
+    record=b.record(db,u,entity,ident)
     if method=='GET':return rows(db,'SELECT id,name,mime,created_at FROM business_attachments WHERE entity=? AND record_id=?',(entity,ident))
     require(u['role'] in BUSINESS[entity]['manage'])
+    b.writable(db,u,entity,record)
     name=str(p.get('name','document')).replace('\\','/').split('/')[-1]
     suffix=name.rsplit('.',1)[-1].lower()
     require(suffix in ('pdf','txt','docx','png','jpg','jpeg','mp4','csv'),'File format is not supported.',400)
@@ -98,7 +99,7 @@ def route(db,u,method,path,p,raw_path):
         b.record(db,u,r['entity'],r['record_id'])
         from .storage import uploaded_file
         return uploaded_file(db,'business-uploads',r['storage_key']).read_bytes(),{'Content-Type':'application/octet-stream','Content-Disposition':"attachment; filename*=UTF-8''"+__import__('urllib.parse',fromlist=['quote']).quote(r['name'])}
-    if path=='/api/task-assignees' and method=='GET':return b.task_assignees(db,u,int(query.get('team_id',0))),None
+    if path=='/api/task-assignees' and method=='GET':return b.task_assignees(db,u,int(query.get('team_id',0)),query.get('project_id')),None
     if path=='/api/discussions':return discussion(db,u,method,query if method=='GET' else p),None
     if len(parts)==3 and parts[0]=='reports' and parts[2]=='revise' and method=='POST':
         ident=int(parts[1]);r=one(db,'SELECT * FROM reports WHERE id=?',(ident,));require(r and r['employee_id']==u['employee_id'],'Report is outside your scope.',404)
@@ -170,12 +171,18 @@ def route(db,u,method,path,p,raw_path):
             result=cases(db,u,'POST',{**p,'token':token,'case_ref':bookmark['case_ref']});result.pop('case_ref',None);return result,None
         require(handler);return cases(db,u,'POST',p),None
     if len(parts)==3 and parts[0]=='tasks' and parts[2] in ('comments','dependencies'):
+        require(method in ('GET','POST'),'Method not allowed.',405)
         ident=int(parts[1]);require(ident in {r['id'] for r in list_resource(db,u,'tasks')},'Task outside your scope.',404)
         if parts[2]=='comments':
             if method=='GET':return rows(db,'SELECT c.*,e.name AS author FROM task_comments c JOIN employees e ON e.id=c.author_id WHERE task_id=? ORDER BY c.id',(ident,)),None
             text=str(p.get('comment','')).strip();require(1<=len(text)<=5000,'Enter a comment.',400)
             insert(db,'task_comments',dict(task_id=ident,author_id=u['employee_id'],comment=text));return {'message':'Comment added.'},None
+        require(method=='POST','Method not allowed.',405)
+        from .work_access import supervises_work, connected_tasks
+        task=one(db,'SELECT * FROM tasks WHERE id=?',(ident,))
+        require(supervises_work(db,u,task['employee_id'],task['project_id']),'Only responsible management may change task dependencies.')
         other=int(p['depends_on_id']);visible={r['id'] for r in list_resource(db,u,'tasks')};require(other in visible and other!=ident,'Choose a different authorized task.',400)
+        require(connected_tasks(task,one(db,'SELECT * FROM tasks WHERE id=?',(other,))),'Dependencies require the same project or the same internal team.',400)
         # Reject cycles rather than merely preventing a direct self-reference.
         links=rows(db,'SELECT * FROM task_dependencies');frontier=[other];seen=set()
         while frontier:

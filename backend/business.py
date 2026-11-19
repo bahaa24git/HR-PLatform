@@ -102,11 +102,14 @@ def record(db,u,entity,ident):
     return result
 
 def writable(db,u,entity,old=None):
+    require(allowed_module(db,u,entity))
     require(u['role'] in BUSINESS[entity]['manage'])
-    if old and entity in ('projects','project_members','milestones','project_risks','campaigns') and u['role'] not in GLOBAL:
+    from .work_access import manages_project, can_edit_deliverable
+    if old and entity in ('projects','project_members','milestones','project_risks','campaigns'):
         pid=old['id'] if entity=='projects' else old['project_id']
-        project=record(db,u,'projects',pid)
-        require(project['manager_id']==u['employee_id'] or u['role'] in ('manager','leader','sales_manager','sales_leader'))
+        require(manages_project(db,u,pid),'Only the assigned project manager or Owner may change project administration.')
+    if old and entity=='deliverables':require(can_edit_deliverable(db,u,old),'This deliverable is not yours or supervised by you.')
+    if old and entity=='time_records':require(u['employee_id']==old['employee_id'] or manages_project(db,u,one(db,'SELECT project_id FROM tasks WHERE id=?',(old['task_id'],))['project_id']),'You cannot edit another contributor\'s time record.')
 
 def validate_values(db,u,entity,p,old=None):
     spec=BUSINESS[entity]
@@ -126,6 +129,13 @@ def validate_values(db,u,entity,p,old=None):
                 record(db,u,table,v[k])
         if k in ('score','probability','discount_percent','quality_score'):require(0<=v[k]<=100,'Percentage must be 0–100.',400)
     merged={**(old or {}),**v}
+    from .work_access import manages_project, can_edit_deliverable
+    if entity in ('project_members','milestones','project_risks','campaigns'):
+        require(manages_project(db,u,merged['project_id']),'Only the assigned project manager or Owner may administer this project.')
+    if entity=='project_risks':
+        require(one(db,'SELECT id FROM project_members WHERE project_id=? AND employee_id=?',(merged['project_id'],merged['owner_id'])) or one(db,'SELECT id FROM projects WHERE id=? AND manager_id=?',(merged['project_id'],merged['owner_id'])),'The risk owner must be assigned to this project.',400)
+    if entity=='projects':
+        require(u['role']=='owner' or merged['manager_id']==u['employee_id'],'A project can only be created/managed by its assigned manager or Owner.')
     if entity=='project_members':
         capabilities=v.get('capabilities')
         if capabilities is None:
@@ -189,6 +199,7 @@ def validate_values(db,u,entity,p,old=None):
     if entity=='campaigns' and merged['status']=='Active':
         if merged['end']<company_today(db).isoformat():require(bool(str(merged.get('extension_reason','')).strip()),'An ended campaign needs a documented extension reason or a completed status.',409)
     if entity=='deliverables':
+        require(can_edit_deliverable(db,u,merged),'You cannot submit or change work for an unrelated contributor.')
         if old and u['role'] not in MANAGERS:require(old['employee_id']==u['employee_id'],'Only the contributor or an authorized manager can edit this deliverable.')
         if u['role'] not in MANAGERS:require(merged['employee_id']==u['employee_id'])
         require(one(db,'SELECT id FROM project_members WHERE project_id=? AND employee_id=?',(merged['project_id'],merged['employee_id'])) or one(db,'SELECT id FROM projects WHERE id=? AND manager_id=?',(merged['project_id'],merged['employee_id'])),'Contributor must be assigned to the project.',400)
@@ -207,7 +218,8 @@ def validate_values(db,u,entity,p,old=None):
         require(0<merged['hours']<=24,'Log between 0 and 24 hours.',400)
         task=one(db,'SELECT * FROM tasks WHERE id=?',(merged['task_id'],))
         require(task['employee_id']==merged['employee_id'],'Time must be logged for the task assignee.',400)
-        require(u['employee_id']==merged['employee_id'] or u['role'] in ('owner','project_manager'))
+        require(u['employee_id']==merged['employee_id'] or manages_project(db,u,task['project_id']),'Only the contributor or that project\'s assigned manager may log time.')
+        if u['employee_id']==merged['employee_id']:require(task['id'] in {t['id'] for t in list_resource(db,u,'tasks')},'Task is outside your current work scope.')
         total=one(db,'SELECT COALESCE(SUM(hours),0) AS n FROM time_records WHERE employee_id=? AND day=? AND id!=?',(merged['employee_id'],merged['day'],old['id'] if old else 0))['n']
         require(total+merged['hours']<=24,'Daily logged hours cannot exceed 24.',400)
     if entity=='sales_targets':require(bool(merged.get('employee_id') or merged.get('team_id')) and merged['target_cents']>0,'Choose a target subject and positive amount.',400)
@@ -281,7 +293,9 @@ def update(db,u,entity,ident,p):
     require(bool(v) or (entity=='quotations' and 'lines' in p),'No editable fields supplied.',400)
     if v:db.execute(f'UPDATE {entity} SET '+','.join(k+'=?' for k in v)+' WHERE id=?',list(v.values())+[ident])
     if entity=='quotations' and 'lines' in p:quotation_lines(db,ident,p)
-    if entity=='time_records':refresh_time(db,v.get('task_id',old['task_id']))
+    if entity=='time_records':
+        refresh_time(db,v.get('task_id',old['task_id']))
+        if v.get('task_id',old['task_id'])!=old['task_id']:refresh_time(db,old['task_id'])
     if entity=='projects':
         for member in rows(db,'SELECT employee_id FROM project_members WHERE project_id=?',(ident,)):
             if member['employee_id']!=u['employee_id']:notify(db,member['employee_id'],'Project updated',v.get('name',old['name']))
@@ -348,25 +362,37 @@ def quotation_action(db,u,ident,p):
     audit(db,u,'quotations',ident,'Approval / client review',q,{'status':status,'client_status':client},p.get('reason',''))
     return {'message':'Quotation review recorded.'}
 
-def task_assignees(db,u,team):
+def task_assignees(db,u,team,project_id=None):
+    require(u['role'] in MANAGERS+['hr'],'Task assignment requires a management role.')
     t=one(db,'SELECT * FROM teams WHERE id=?',(int(team),));require(t is not None,'Select a valid target team first.',400)
+    from .work_access import manages_project
     emp=one(db,'SELECT team_id FROM employees WHERE id=?',(u['employee_id'],))
-    own=emp['team_id']==t['id'] or t['leader_id']==u['employee_id']
+    own=emp['team_id']==t['id'] or u['employee_id'] in (t['leader_id'],t['manager_id']) or one(db,'SELECT 1 FROM team_access WHERE user_id=? AND team_id=?',(u['id'],t['id']))
+    members=None
+    if project_id:
+        project=record(db,u,'projects',int(project_id))
+        members={r['employee_id'] for r in rows(db,'SELECT employee_id FROM project_members WHERE project_id=?',(project['id'],))}|{project['manager_id']}
+        if manages_project(db,u,project['id']):return [r for r in rows(db,"SELECT id,name FROM employees WHERE team_id=? AND status!='Archived'",(t['id'],)) if r['id'] in members]
     if own:
         allowed=set(scope_ids(db,u))|commercial_people(db,u)
         managed={r['id'] for r in rows(db,'SELECT id FROM projects WHERE manager_id=?',(u['employee_id'],))}
         allowed.update(r['employee_id'] for r in rows(db,'SELECT project_id,employee_id FROM project_members') if r['project_id'] in managed)
-        return [r for r in rows(db,"SELECT id,name FROM employees WHERE team_id=? AND status!='Archived'",(t['id'],)) if r['id'] in allowed]
-    return rows(db,"SELECT id,name FROM employees WHERE id=? AND status!='Archived'",(t['leader_id'],)) if t['leader_id'] else []
+        return [r for r in rows(db,"SELECT id,name FROM employees WHERE team_id=? AND status!='Archived'",(t['id'],)) if r['id'] in allowed and (members is None or r['id'] in members)]
+    if members is not None and t['leader_id'] in members:
+        return rows(db,"SELECT id,name FROM employees WHERE id=? AND status!='Archived'",(t['leader_id'],))
+    if u['role'] in ('owner','hr'):return rows(db,"SELECT id,name FROM employees WHERE id=? AND status!='Archived'",(t['leader_id'],)) if t['leader_id'] and members is None else []
+    return []
 
 def validate_task(db,u,p,old=None):
+    require(u['role'] in MANAGERS+['hr'],'Only authorized management may change task assignments.')
     v={**(old or {}),**p}
     if old and any(k in p and p[k]!=old[k] for k in ('employee_id','project_id')):
         require(not one(db,'SELECT id FROM deliverables WHERE task_id=?',(old['id'],)),'A task with linked deliverables cannot be reassigned to another contributor/project; preserve its delivery history.',409)
     require(v.get('team_id'),'Select the target team first.',400)
     require(type(v.get('complexity')) in (int,float) and float(v['complexity']).is_integer() and 1<=v['complexity']<=5,'Difficulty must be a whole number from 1 to 5.',400)
-    if not old or any(k in p and p[k]!=old[k] for k in ('employee_id','team_id')):
-        require(int(v['employee_id']) in {r['id'] for r in task_assignees(db,u,v['team_id'])},'For another team, assign only to its designated team leader. Own-team assignments require authorization.')
+    if not old or any(k in p and p[k]!=old[k] for k in ('employee_id','team_id','project_id')):
+        require(int(v['employee_id']) in {r['id'] for r in task_assignees(db,u,v['team_id'],v.get('project_id'))},'Assignment requires authorized supervision or a shared project. Unrelated teams cannot receive tasks.')
+    require(one(db,'SELECT id FROM employees WHERE id=? AND team_id=?',(int(v['employee_id']),int(v['team_id']))),'The assignee must belong to the selected team.',400)
     if v.get('project_id'):
         project=record(db,u,'projects',int(v['project_id']))
         require(one(db,'SELECT id FROM project_members WHERE project_id=? AND employee_id=?',(project['id'],int(v['employee_id']))) or project['manager_id']==int(v['employee_id']),'Add the assignee to the project before assigning project work.',400)

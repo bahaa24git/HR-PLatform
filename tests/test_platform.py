@@ -78,6 +78,9 @@ class CompanyTest(unittest.TestCase):
         self.assertTrue(result['id'])
         with self.assertRaises(Problem):create_resource(self.db,self.leader,'tasks',{**base,'complexity':6})
         with self.assertRaises(Problem):create_resource(self.db,self.leader,'tasks',{**base,'team_id':self.horizon,'employee_id':self.s2['employee_id']})
+        with self.assertRaises(Problem):create_resource(self.db,self.leader,'tasks',{**base,'team_id':self.horizon,'employee_id':self.l2['employee_id']})
+        from backend.platform_api import route
+        route(self.db,self.hr,'POST','/api/admin/team-access',{'user_id':self.leader['id'],'team_id':self.horizon},'')
         result=create_resource(self.db,self.leader,'tasks',{**base,'team_id':self.horizon,'employee_id':self.l2['employee_id']})
         self.assertEqual(self.l2['employee_id'],one(self.db,'SELECT employee_id FROM tasks WHERE id=?',(result['id'],))['employee_id'])
     def test_kpi_owner_rules_upward_downward_warning_and_audit(self):

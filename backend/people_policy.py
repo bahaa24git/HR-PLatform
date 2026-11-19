@@ -46,12 +46,16 @@ def before_update(db,u,table,ident,p):
             error.details={'changes':changes,'threshold':threshold};raise error
     if table=='learning_plans':require(assigned_leader(db,u,r['employee_id']),'Employees can track plans but cannot edit them; only the assigned team leader may edit a plan.')
     if table=='tasks':
+        from .work_access import supervises_work, manages_project
+        structural=('employee_id','team_id','project_id','complexity','title','due','priority','estimated_hours')
+        if any(k in p and p[k]!=r.get(k) for k in structural):
+            require(u['role'] in MANAGERS+['hr'] and supervises_work(db,u,r['employee_id'],r['project_id']),'Only the responsible supervisor or assigned project manager may change task planning.')
         if any(k in p for k in ('employee_id','team_id','complexity','project_id')):validate_task(db,u,p,r)
         if p.get('status') in ('Done','Completed','Approved'):
             pending=one(db,"SELECT COUNT(*) AS n FROM task_dependencies d JOIN tasks t ON t.id=d.depends_on_id WHERE task_id=? AND t.status NOT IN ('Done','Completed','Approved')",(ident,))['n']
             require(not pending,'Complete blocking dependencies before closing this task.',409)
-        if 'quality_score' in p:require(assigned_leader(db,u,r['employee_id']) or u['role']=='project_manager')
-        if p.get('status')=='Approved':require(assigned_leader(db,u,r['employee_id']) or u['role']=='project_manager','Only an authorized reviewer may approve task quality.')
+        if 'quality_score' in p or p.get('status')=='Approved':
+            require(u['employee_id']!=r['employee_id'] and (assigned_leader(db,u,r['employee_id']) or manages_project(db,u,r['project_id'])),'A different authorized reviewer must approve task quality.')
     if table=='employees' and 'salary_cents' in p and int(p['salary_cents'])!=r['salary_cents']:
         require(str(p.get('justification','')).strip(),'Salary changes require a documented reason.',400)
     return r

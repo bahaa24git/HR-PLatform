@@ -1,156 +1,147 @@
 # Northstar Company OS
 
-The 18 November 2026 audit adds payroll finalization safeguards, corrected attendance counts, role-access fixes, real performance trends, holidays, audited timesheet imports/corrections, invoices/collections and career development paths. See [the full audit report](docs/FULL_AUDIT_REPORT.md) for exact verification, migrations, limitations and launch instructions, and [the vendor feature comparison](docs/FAWRY_FEATURE_GAP.md) for sourced Fawry-related capabilities.
+HR, CRM, sales, projects, finance and reporting for a digital marketing and media-production company. The existing Python/SQLite application connects lead conversion, approved contracts, delivery work, employee development and permission-scoped business intelligence.
 
-Normal initialization does not seed fictional employees. For a brand-new empty installation only, use `python scripts/setup_first_account.py --database data/hr.sqlite3` to explicitly create the first authorized HR account with a privately entered password; existing accounts are never replaced.
+The current branch is **`dark-ui`**. It includes the dark charcoal interface, lavender accents, expandable sidebar sections, Arabic/English support and responsive layouts. The white outer frame has been removed.
 
-An integrated company-management application for a digital marketing and media-production company: CRM → sales → clients/contracts → projects/campaigns → tasks/deliverables → employee performance, with HR, analytics and a permission-aware real-model advisor.
+## Run the application
 
-This upgrades the existing Northstar HR application **in place**. Existing employee, contract, attendance, leave, payroll and report records are retained. Commercial records start empty; no fabricated company data is inserted during normal startup. A complete fictional organization is available only in its dedicated disposable demo database.
+Requirements: Python 3.11 or newer. Node.js is needed for browser tests, not for running the application.
 
-## Start
-
-Requirements: Python 3.11+. Node.js is required only for browser tests, not to run the application.
-
-From this directory:
+From the project directory in PowerShell:
 
 ```powershell
-python -m pip install -r requirements.txt --target .vendor
-python -m backend.server
+python -m pip install --target .vendor -r requirements.txt
+python -m backend.server --no-demo --host 127.0.0.1 --port 8000
 ```
 
-Open **http://127.0.0.1:8000**. Stop with Ctrl+C. Use `py` instead of `python` if that is your Windows Python launcher.
+Open **http://127.0.0.1:8000**. Stop the server with Ctrl+C. Use `py` instead of `python` if that is your Windows launcher.
 
-PDF exports require the installed ReportLab, Arabic reshaper and bidi libraries. PDF CV extraction uses pypdf. These are local libraries; core business workflows do not require any paid service.
+Normal startup applies additive migrations and reference configuration. It does **not** insert fictional employees, accounts, projects or transactions. Existing business records are retained. The default working database is `data/hr.sqlite3`.
 
-Optional configuration:
+For a brand-new installation with no accounts, explicitly create the first authorized HR account:
 
 ```powershell
-Copy-Item .env.example .env
-python -m backend.server --host 127.0.0.1 --port 8000
+python scripts/setup_first_account.py --database data/hr.sqlite3
 ```
 
-An existing `.env` must be preserved rather than overwritten. Process environment variables take precedence. `HR_DATABASE` selects a different database file; default is `data/hr.sqlite3`. All configuration and runtime files remain inside this project by default.
+Enter the real HR name/email and a private password when prompted. This command refuses to replace existing accounts. Complete the actual employment, organization and compensation details before processing payroll.
+
+### Configuration
+
+Create `.env` from `.env.example` only if it does not already exist:
+
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+Preserve existing `.env` settings. Process environment variables take precedence over that file. To select a different database for the current terminal:
 
 ```powershell
 $env:HR_DATABASE = 'data/separate-company.sqlite3'
-python -m backend.server
+python -m backend.server --no-demo
 ```
 
-Normal startup does not seed fictional employees or company transactions. A new installation receives neutral company configuration and an empty workspace. The older 12-person starter is available only with the explicit `--demo` option; it is separate from the complete company dataset described below.
-
-## Isolated 50-person demo company
-
-Create or verify the dedicated demo database:
-
-```sh
-python scripts/seed_demo_company.py
-```
-
-The only target is `data/northstar-demo-company.sqlite3`. The seed command refuses an existing unmarked database, refuses to target the configured working database, and verifies the dataset read-only on subsequent runs. It creates 50 employees, 10 active projects, 12 client accounts, 10 approved service contracts and quotations, CRM history, campaigns, project assignments, tasks, milestones, deliverable reviews, six months of attendance/KPI/payroll history, leave approvals, training, onboarding and notifications.
-
-Start the app against that database without changing `.env`:
-
-```sh
-HR_DATABASE=data/northstar-demo-company.sqlite3 python -m backend.server
-```
-
-PowerShell:
+To return to the database configured in `.env` or the default, clear the terminal override before starting the server:
 
 ```powershell
+Remove-Item Env:HR_DATABASE -ErrorAction SilentlyContinue
+```
+
+Keep `.env`, databases, uploads and private reports out of Git. Back up the database and its private uploads together. Selected databases have separate private-file storage; existing legacy uploads remain readable.
+
+## Branches and UI
+
+```bash
+git switch dark-ui
+git switch main
+git branch
+```
+
+`dark-ui` contains the redesigned interface. `main` is the baseline without that UI redesign. Commit or stash unfinished changes before switching. Restart the backend and refresh the browser after switching, because static routes and frontend assets can differ.
+
+Click a sidebar section heading to expand or collapse its nested links. The top-left menu button switches to the compact sidebar on desktop and opens the navigation drawer on mobile. Navigation continues to respect the signed-in account's permissions.
+
+## Isolated demonstration company
+
+Create or verify the dedicated demonstration database:
+
+```powershell
+Remove-Item Env:HR_DATABASE -ErrorAction SilentlyContinue
+python scripts/seed_demo_company.py
 $env:HR_DATABASE = 'data/northstar-demo-company.sqlite3'
-python -m backend.server
+python -m backend.server --no-demo --port 8001
 ```
 
-To rebuild it, the command prints the exact destructive target before removing only that file and its SQLite journal files:
+Open **http://127.0.0.1:8001**. The seed command targets only `data/northstar-demo-company.sqlite3`; it refuses the configured working database and existing unmarked databases. An existing marked demo is checked without being automatically reset or reseeded. If `.env` selects that demo as the working database, use a terminal configured for the normal working database when running the seed command.
 
-```sh
-python scripts/seed_demo_company.py --reset --confirm-reset DELETE-NORTHSTAR-DEMO-COMPANY
-```
+A fresh demo contains:
 
-The demo logins use password **`Demo2026!`**. Examples include `owner@demo.local`, `hr@demo.local`, `nora@demo.local`, `tarek.mostafa@northstar.demo` (system administrator), `sherif.adel@northstar.demo` (sales contracts manager), `mahmoud.el.sayed@northstar.demo` (project manager), and `mona.reda@northstar.demo` (accountant). The Graphic Designer Nora Khalil is assigned to one project only; the explicit campaign capability is limited to that project. These credentials and records do not exist in the normal application database.
+- 50 fictional employees/users in staffed departments and teams.
+- 12 client accounts, 14 deals, 10 quotations and approved client contracts.
+- 10 projects and campaigns, with Active, Planning, On hold and Completed lifecycle examples rather than identical progress.
+- Six months of connected attendance, leave, performance, payroll, training and commercial history.
+- Assigned tasks, milestones, risks, deliverables, review history and recorded effort.
 
-## Existing demo logins
+The fresh dataset has five Active projects; the others illustrate different lifecycle stages. Older marked demos retain their existing records and may differ from the fresh dataset. No reset is required to run the application.
 
-Development only; fictional people. Password: **`Demo2026!`** for each existing seeded account. Passwords are stored as independently salted PBKDF2 hashes; there is no universal-login mechanism.
+### Demo accounts
 
-| Role | Account |
+For the isolated demo only, the password is **`Demo2026!`**. It is not a default production password.
+
+| Role/persona | Account |
 | --- | --- |
 | Owner | `owner@demo.local` |
-| HR Administrator | `hr@demo.local` |
+| HR | `hr@demo.local` |
 | Department Manager | `manager@demo.local` |
-| Creative Team Leader | `leader@demo.local` |
-| Growth Team Leader | `leader2@demo.local` |
-| Employee | `nora@demo.local` |
-| Employee | `sara@demo.local` |
+| Team Leader | `leader@demo.local` |
+| Graphic Designer | `nora@demo.local` |
+| Media Buyer | `sara@demo.local` |
+| System Administrator | `tarek.mostafa@northstar.demo` |
+| Executive | `salma.el.sherif@northstar.demo` |
+| Sales Manager | `sherif.adel@northstar.demo` |
+| Sales Team Leader | `aya.hassan@northstar.demo` |
+| Project Manager | `mahmoud.el.sayed@northstar.demo` |
+| Accountant | `mona.reda@northstar.demo` |
 
-Existing other starter accounts (`youssef`, `karim`, `dina`, `leila`, `ziad` at `@demo.local`) are available only in the legacy `--demo` starter and in the isolated company database.
+Nora has assigned project access and an explicit campaign capability limited to one project. A designer does not automatically receive unrelated campaign access.
 
-New roles are supported: Sales Employee, Sales Team Leader, Sales Contracts Manager, Project Manager, Accounting, Executive Management and Administrator. To provision them, HR creates/updates an employee with department/team/seniority, then creates their account from the employee record or changes an existing account through **Users & roles**.
+Browser tests create additional accounts such as `sales.manager@demo.local`, `leader.atlas@demo.local`, `sales.atlas.1@demo.local`, `project.manager@demo.local`, `accounting@demo.local` and `system.admin@demo.local`. Those belong to a separate browser-test database. They are not automatically created in the normal application or named demo company.
 
-The configurable organization includes Sales Atlas and Sales Horizon, seniority levels, and reference departments/positions for Operations, PR, Content, Media Buying, Graphic Design, Reels, Camera Operators, Editing, Accounting and Executive Management. Existing People & Culture/creative teams and their IDs are retained rather than destructively merged or renamed. Assign team leaders and the supervising sales manager under **Organization structure → Teams**. The sales manager can supervise both teams through the teams' manager field or explicit team-access grants.
+The legacy twelve-person starter is available only through explicit `--demo` initialization. The optional `scripts/add_project_examples.py` is for existing fictional `Example` projects named Brand launch, Seasonal content and Product showcase; it is not the complete company seeder and does not create those prerequisite projects.
 
-The normal application does not manufacture six new sales employees or commercial transactions. The isolated browser test fixture creates two leaders, three differently senior employees per sales team, a contracts manager, a project manager and an accountant for reproducible QA.
+## Connected workflows
 
-### Additional sales, project and accounting test accounts
-
-These accounts are created by `tests/browser_seed.py` in the **isolated browser-test database**, not in the normal website database. Each uses password **`Demo2026!`**.
-
-| Role | Team / scope | Account |
-| --- | --- | --- |
-| Sales Contracts Manager | Sales Atlas and Sales Horizon | `sales.manager@demo.local` |
-| Sales Team Leader | Sales Atlas | `leader.atlas@demo.local` |
-| Sales Team Leader | Sales Horizon | `leader.horizon@demo.local` |
-| Sales Employee — seniority level 1 | Sales Atlas | `sales.atlas.1@demo.local` |
-| Sales Employee — seniority level 2 | Sales Atlas | `sales.atlas.2@demo.local` |
-| Sales Employee — seniority level 3 | Sales Atlas | `sales.atlas.3@demo.local` |
-| Sales Employee — seniority level 1 | Sales Horizon | `sales.horizon.1@demo.local` |
-| Sales Employee — seniority level 2 | Sales Horizon | `sales.horizon.2@demo.local` |
-| Sales Employee — seniority level 3 | Sales Horizon | `sales.horizon.3@demo.local` |
-| Project Manager | Creative Studio team; assigned projects | `project.manager@demo.local` |
-| Accountant | Accounting | `accounting@demo.local` |
-
-`python scripts/run_browser_tests.py` creates these accounts automatically in a separate test database. To use equivalent accounts on the normal website at port 8000, provision them through HR's **Users & roles** workflow described above. Executive Management and Administrator roles are supported but have no automatically seeded demo logins.
-
-## Working product areas
-
-| Area | Implemented workflows |
+| Area | Current functionality |
 | --- | --- |
-| CRM | Companies/clients, multiple contacts, leads, sources, qualification/score, team/employee ownership, duplicate detection, next follow-up, activities, account timelines, private attachments, custom fields, search, status/team/owner/date filters, sorting, column selection, saved views, atomic CSV import and safe CSV export. |
-| Sales | Configurable visual pipeline, drag/drop and keyboard/button stage moves, loss reasons, probabilities and dates, auditable stage/ownership changes, lead-to-company/contact/deal conversion, explicit won-deal-to-client-contract conversion, individual/team targets, team comparison and forecasts. |
-| Quotations/proposals | Multiple service lines, quantities, integer minor-unit prices, Decimal totals and discounts, new versions retaining prior versions, internal approval/comments, client review/acceptance, PDF export and accepted-proposal conversion to draft contract. |
-| Client contracts | Separate from employment contracts; fees, currency, dates, renewal, services, payment terms, ownership, approval and private attachments. Approval is required before project creation. Converted deal client/outcome/value are protected. |
-| Projects/campaigns | Approved-contract/client linkage, manager, cross-department membership, templates, milestones, risks/mitigation, project tasks/dependencies, recorded outcomes, campaign objective/channel/schedule/advertising budget/spend/results. |
-| Department delivery | Configurable work fields for content calendars, copy/captions, design briefs/drafts, ad setup/reporting, shoots/footage, video edits, reels/scripts, PR coverage and operational handovers. Contributor, brief, asset reference, schedule, quality, revision and approval history are retained. |
-| Tasks/workload | Team-first assignment; own-team authorized members or another team's designated leader only; backend-enforced integer difficulty 1–5; project membership validation; effort records, comments, dependency cycle checks, status/quality/revision context and notifications. |
-| Financial intelligence | Approved contract fees, won deal value, receipts, explicit project costs, employee-effort cost estimates where privacy allows, vendor costs and client advertising spend are separate. Shared-contract/mixed-service allocations are not invented. Profit/margin are unavailable when required allocation/cost evidence is missing. |
-| HR | Existing shared employee records, private documents, recruitment/CV parsing/interviews/hiring, onboarding, attendance, configurable geofencing, leave counting and approval chains, yearly balances, deterministic payroll drafts/approval/snapshots and offboarding retained. |
-| Performance | Role-specific frameworks, configurable seniority multipliers, assigned-team-leader-only employee KPI creation/editing, bidirectional threshold warnings (20% default), explicit confirmation/justification and audit. Project effort, quality, difficulty, revisions and blockers can be inspected as evidence, not an automatic final score. |
-| Reports/discussions | Profession-specific monthly questions, employees' submitted reports, leader feedback/return for correction, revised submissions retaining audit history, readable server PDFs, append-only threaded two-way discussions with authors/timestamps/notifications. |
-| Learning | Expanded HR-managed course library, provider/category/skills/description/duration/cost/difficulty/target roles/requirements, archiving, plan assignment, leader-only plan edits, employee read-only progress, assessments and descriptive training impact. Completion does not automatically grant a skill. |
-| Feedback/engagement | Anonymous/identified feedback, private browser bookmarks for follow-up with no employee-facing ticket numbers, HR-controlled owner case sharing, no anonymous identity link, handler responses and history. Satisfaction receipts have a database-enforced employee/calendar-month uniqueness rule across surveys. Owner cannot participate. |
-| Owner lifecycle | Business-focused navigation and dashboard; all company contracts; no personal attendance/leave/payroll/resignation workflows; documented termination proposal → HR/legal assessment → explicit owner approval → HR checklist/settlement/access closure. No automatic legal outcome is assumed. |
-| Intelligence | Actual CRM/project/HR evidence, company/sales/project/client/department summaries, target achievement, source effectiveness, losses, cycle duration, forecast snapshots/accuracy, backlog/capacity context and a real-model open-ended advisor. |
-| Administration | Organization/teams/positions/seniority, accounts and roles, team supervision grants, structured settings (no ordinary raw JSON settings screen), KPI/course configuration and filtered audit log. |
+| CRM and sales | Accounts/contacts, leads and sources, follow-ups, team ownership, duplicate checks, searchable timelines, private attachments, custom fields, saved views, CSV import/export, visual pipeline, won/lost confirmation and targets. |
+| Quotes and contracts | Service lines, Decimal totals/discounts, quotation versions, human approval/client review, won-deal conversion, approved client contracts and preserved financial terms. Client contracts remain distinct from employment contracts. |
+| Projects and delivery | Approved-contract linkage, managers/members, milestones, risks, task dependencies, department-specific deliverables, quality/revision review, effort logs and real task-based progress. Closing a project requires completed work and approved deliverables. |
+| Finance | Contract-backed invoices, receipt allocation, outstanding/overdue balances, project costs and PDF reports. Issued invoice terms are protected; client ad spend, contract fees, receipts and estimates remain separate. |
+| Employee lifecycle | Profiles, documents/contracts, recruitment/CV extraction/interviews, hiring conversion, onboarding, profile/promotion/transfer history, resignation and documented termination/offboarding workflows. |
+| Attendance and leave | Company-timezone check-in/out, real classifications, scoped reports, leave approval chains/balances, HR holiday calendar, reviewed absence decisions, audited corrections and atomic CSV timesheet imports. |
+| Payroll | Deterministic simulation, stable draft records, approved salary components, pending attendance/leave guards, recalculation at approval and protected historical snapshots. |
+| Performance and learning | Role-specific KPIs, seniority context, significant-change confirmation, monthly reports/discussions, approved historical trends, pending evaluation counts, training effectiveness and HR-defined career paths with advisory skill gaps. |
+| Feedback and wellbeing | Confidential cases, anonymous follow-up bookmarks, explicitly shared Owner access, privacy-threshold survey aggregates and permission-scoped AI wellbeing analysis. |
+| Administration | Organization/teams, scoped roles/accounts, settings, supervision and audit history. System Admin is a technical role, not unrestricted HR or finance access. |
 
-## End-to-end demonstration
+### Attendance policy
 
-1. HR configures teams, leaders, reporting lines and seniority and provisions sales/project/accounting accounts. Existing fictional employee accounts can be reassigned through the UI; no duplicate employee record is needed.
-2. A sales employee creates a lead, records calls/meetings/follow-ups, and converts it. Existing authorized matching companies/contacts are reused.
-3. Move the deal through the pipeline. A won/lost outcome requires explicit confirmation; loss requires a reason. Convert a won deal into a client and draft contract.
-4. The contracts manager/owner reviews and explicitly approves the contract. Create a project linked to that approved contract and client. Assign a project manager and participating employees.
-5. Assign a task after selecting its target team. Cross-team work must go to the other team's designated leader for redistribution. The assignee must also be a project member for project work.
-6. The contributor submits the department-specific deliverable. A different authorized reviewer requests revisions or approves with a quality assessment. Log effort and complete the task with any external delay context.
-7. Inspect employee **Business contribution evidence**, submit the profession-specific monthly report, discuss it with the leader, and export the readable PDF. These facts inform review rather than determining employment decisions.
-8. Accounting records approved production costs and receipts. Company insights distinguish fees, won value, estimates, actual effort, external expenses and client ad spend. Save a forecast snapshot to compare against subsequent closed value.
-9. Employees may submit anonymous feedback. The browser retains a private follow-up token; no case number is shown in ordinary employee screens. Only specifically shared cases become available to the owner.
-10. Owner may propose a termination, but HR review, applicable legal/contract assessment, explicit approval, offboarding checklist, settlement review and access closure are required before archival.
+- Working hours: **09:00-18:00** in the configured company timezone.
+- Normal: **09:00-09:15**; Late: **09:16-11:00**; Absent classification: **11:01 onward**.
+- Late arrival is recorded without an automatic late deduction.
+- A reviewed unauthorized absence deducts **four working days** under the agreed application policy.
+- Owner and System Administrator accounts are excluded from normal attendance/payroll.
+- Missing punches are review indicators, not proof of unauthorized absence.
+- Relevant pending absence/leave decisions block payroll approval; finalized snapshots are not silently modified.
 
-## Real AI — configuration required
+Geofencing stays disabled until HR verifies the real authorized coordinates and radius. `(0,0)` cannot be activated. Do not enter a guessed company location.
 
-The simulated advisor has been removed. With no key/model, the application shows **AI unavailable**, explains what to configure, and does not fabricate an answer. Missing credentials do not block the other modules.
+Onboarding applies for three calendar months from joining. Effective expiry is displayed without deleting completed records; explicit HR extensions are auditable.
 
-In `.env`:
+## AI advisor and generated reports
+
+The advisor supports OpenAI Responses-compatible providers and native Google Gemini. Configure private server-side settings in `.env`:
 
 ```dotenv
 AI_API_KEY=your-server-side-key
@@ -159,74 +150,85 @@ AI_PROVIDER=auto
 AI_BASE_URL=
 ```
 
-Restart the server. Gemini models use Google?s native `generateContent` API with structured JSON output; other models use the [OpenAI Responses API](https://developers.openai.com/api/reference/resources/responses/methods/create). `AI_PROVIDER` may be `auto`, `gemini` or `openai`. Leave `AI_BASE_URL` blank to use the provider?s default endpoint. Gemini model names are detected automatically, including configurations that retained the old OpenAI default URL. Loopback HTTP endpoints are supported for a local compatible model service; remote endpoints must use HTTPS. The old `AI_MODE=demo` setting no longer selects simulated behavior.
+Use `auto`, `gemini` or `openai` for `AI_PROVIDER`. Leave `AI_BASE_URL` blank for the selected provider's default. Remote provider endpoints require HTTPS; loopback HTTP is supported for compatible local services. Restart the backend after configuration changes.
 
-The advisor handles arbitrary questions. General knowledge and authorized company evidence are distinguished in the instructions. It receives freshly scoped CRM/project/HR data, never unrestricted SQL access. Peer-salary requests are rejected before provider retrieval for unauthorized users. Raw anonymous case narratives/identities and individual survey responses are not sent to the model. The model has no mutation tools.
+Without credentials, AI is explicitly unavailable; other application workflows remain usable. Provider errors are reported rather than replaced with fabricated answers. The legacy `AI_MODE=demo` setting does not enable simulated advisor responses.
 
-Conversation history is stored per user/conversation and bound to a current evidence/authorization fingerprint. Changed scope/data invalidates old context rather than retaining stale privileged responses. Timeouts, rate limits, provider rejection and invalid structured output are explicit failures, never simulated fallbacks. Provider secrets are not returned in bootstrap responses or logged.
+The advisor retrieves permission-scoped evidence, routes specialized HR/business intents and coordinates multi-intent context in one configured model request. It has no tools to approve payroll, change business records or make final employment decisions. Anonymous survey identities and raw responses are excluded.
 
-**External blocker:** no live AI credentials were available for this handoff. The adapter, successful structured transport, permissions, missing-key and error paths are tested using controlled responses. End-to-end behavior with a real hosted/local model must be verified after configuring a key/model. This is not claimed as a completed live-provider acceptance check.
+Conversation history is saved per account on the server and restored after reload. Switching accounts loads only the signed-in account's history. Generated reports support structured tables, charts, preview controls and downloadable PDFs. New report snapshots survive ordinary record edits while ownership, role/project scope and campaign-capability checks remain enforced. Legacy reports without permission snapshots may require regeneration.
 
-## Architecture and migration
+See [AI report architecture and verification](docs/AI_REPORTS.md). Live-provider verification is separate from the isolated test suite; test fixtures are never used as production AI fallbacks.
 
-The application is a modular monolith using Python, SQLite and browser-native JavaScript ES modules. It has no frontend build pipeline or paid-service requirement for core workflows.
+## PDF support
+
+Install `requirements.txt` into `.vendor` to enable ReportLab, Arabic shaping/bidi and PDF CV extraction. PDFs include structured content, branding, dates and page numbers. Arabic/English text, native tables, repeated headers and landscape layouts are supported.
+
+Windows uses Tahoma when available; Linux looks for DejaVu Sans. Set `PDF_FONT_PATH` to an existing Arabic-capable TrueType font if needed. No proprietary font is bundled.
+
+## Architecture and data preservation
+
+The application is a modular monolith using Python, SQLite and browser-native JavaScript ES modules. No frontend build process or paid service is required for core workflows.
 
 ```text
-backend/server.py             Authenticated HTTP transport and static allowlist
-backend/service.py            Existing HR services, payroll and leave workflows
-backend/business_catalog.py   CRM/project schemas and form contracts
-backend/business.py           Commercial scopes, conversions, analytics, audit
-backend/platform_api.py       New business and people API routes
-backend/people_policy.py      KPI, assignment, discussion and lifecycle rules
-backend/reporting.py          Branded PDF generation and Arabic shaping
-backend/ai.py                 Real provider, scoped retrieval, safe conversations
-backend/platform_setup.py     Idempotent editable reference configuration
-backend/migrations/           Versions 1–11; additive transformation and policy migrations
-frontend/app.js               Role shell, navigation and dashboards
-frontend/ui.js                Shared controls, form rendering and API helpers
-frontend/business-ui.js       CRM pipeline, relationships, quotes and insights
-frontend/people-ui.js         HR, performance, discussions, feedback and admin
-frontend/translations.js      English/Arabic interface dictionary
-frontend/styles.css           New responsive design system
-tests/                        Database, HTTP and browser scenarios
+backend/server.py             Authenticated HTTP transport and static routes
+backend/access.py             Central role/module permissions
+backend/service.py            HR, attendance, leave and payroll services
+backend/business.py           Commercial scopes, conversions and analytics
+backend/platform_api.py       Business and people API routing
+backend/people_policy.py      KPI, task, discussion and lifecycle rules
+backend/insights.py           Attendance, performance, training and career analytics
+backend/ai.py                 Advisor evidence, routing, reports and history
+backend/ai_providers.py        OpenAI/Gemini transports and safe errors
+backend/report_schema.py      Structured report schema and validation
+backend/system_reports.py     Application records composed as reports
+backend/report_pdf.py         Shared PDF rendering
+backend/storage.py            Database-local private uploads and legacy reads
+backend/migrations/           Additive migrations 001 through 014
+frontend/app.js               Shell, expandable navigation and dashboards
+frontend/people-ui.js         HR workflows and advisor interface
+frontend/business-ui.js       CRM, projects, finance and insights
+frontend/styles.css           Shared responsive styles
+frontend/dark-workspace.css   Dark UI theme
 ```
 
-Migrations 5–11 add commercial/organization records, people governance, department delivery, explicit case sharing, and access/attendance policies. Legacy IDs and records are retained. Before each transformation migration the initializer saves a SQLite backup into `data/backups/`. A separate pre-transformation backup of the working database was also taken. `python scripts/verify_migration.py` reproduces a v4 upgrade and asserts legacy values/IDs and foreign keys are retained.
-
-The codebase audit and stage plan are in [TRANSFORMATION_PLAN.md](docs/TRANSFORMATION_PLAN.md). See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for permission/data boundaries.
-
-## PDF exports
-
-Server-generated PDFs cover quotations/proposals, monthly employee reports, payslips, individual project/client contracts and company/sales/client/department/performance reports. PDF content is formatted into headings, tables and narrative sections; raw JSON is not printed as a report. Documents include company branding, dates and page numbers. Arabic shaping/bidi and an embedded TrueType font support RTL output.
-
-Windows uses installed Tahoma by default; Linux looks for DejaVu Sans. Set `PDF_FONT_PATH` to an existing Arabic-capable `.ttf` if neither is available. No proprietary font file is bundled.
+Migrations retain legacy IDs and business records. New versions 012-014 add holidays/correction history, campaign extension explanations, invoices/receipt allocation and career paths. The initializer creates migration backups; do not delete or reseed an existing database to upgrade it. Restart the backend to apply pending additive migrations.
 
 ## Verification
 
 ```powershell
-python -m compileall -q backend
-python -m unittest discover -s tests -v
-python scripts/verify_migration.py
 npm install
 npm run check
-npm run test:e2e
+python -m unittest discover -s tests -p "test_*.py"
+python scripts/run_browser_tests.py
+python scripts/verify_migration.py
+python scripts/verify_working_copy.py
+python scripts/smoke_install.py
 ```
 
-Browser QA uses Chrome by default. For Edge, set `$env:HR_BROWSER_CHANNEL = 'msedge'`. The runner uses a new isolated database and two-team organization fixture on port 8011 and terminates only its own server. Browser results/screenshots are written to `test-results/`. It never seeds commercial test records into your normal database.
+Browser tests use Chrome and an isolated database on port 8011. For Edge, set `$env:HR_BROWSER_CHANNEL = 'msedge'`. Screenshots/results are written to `test-results/`. The runner terminates its own test server. It does not reseed the working database.
 
-Executed results and boundaries are recorded in [VERIFICATION.md](docs/VERIFICATION.md). Source-only installation can be reproduced after packaging:
+`verify_working_copy.py` opens the configured working database read-only, upgrades a temporary copy and checks original business values, repeated initialization and integrity. Review exact audit results and remaining requirements in:
+
+- [Full audit report](docs/FULL_AUDIT_REPORT.md)
+- [Issue-to-file checklist](docs/AUDIT_CHECKLIST.md)
+- [Sourced Fawry feature comparison](docs/FAWRY_FEATURE_GAP.md)
+- [Verification history](docs/VERIFICATION.md)
+- [Architecture](docs/ARCHITECTURE.md)
+
+For a source-only archive:
 
 ```powershell
 python scripts/package_source.py
 python scripts/verify_package.py
 ```
 
-The resulting `northstar-company-os-source.zip` excludes secrets, databases, private files, caches and installed dependencies. Install `requirements.txt` after extraction to enable PDF functions.
+Packaging excludes `.env`, databases, private files, installed dependencies and caches.
 
-## Limits and remaining work
+## Remaining boundaries
 
-See [SECURITY_AND_LIMITATIONS.md](docs/SECURITY_AND_LIMITATIONS.md) and [ACCEPTANCE.md](docs/ACCEPTANCE.md). This is a working graduation platform, not HubSpot/Salesforce feature parity or a production accounting/legal-compliance product. External email/calendar/bank/ad-platform connectors, OCR, electronic signatures, sophisticated accounting/revenue allocation, enterprise identity and production hosting hardening are not included. AI live-provider acceptance remains blocked by missing credentials. No unsupported Egyptian legal notice period or termination outcome is hardcoded; HR must document the applicable assessment.
+External bank/Fawry payout connections, statutory tax/social-insurance calculations, fiscal e-invoicing, attendance hardware connectors, a native mobile app and a separately authenticated client portal are not implemented. Responsive web and internal client/quotation workflows do not imply those integrations exist.
 
-Advisor conversation history is stored in the server SQLite database and restored for the authenticated account when opening the advisor. Messages retain recommendations and PDF download links. Signing out clears the browser state; another account cannot request that history by supplying a user ID. History from a different role or permission scope is withheld. Back up the database to retain conversations.
+No complete vendor feature parity or legal-compliance certification is claimed. AI analysis and career readiness are advisory. Real geofence activation requires verified company coordinates. Existing historical inconsistencies are preserved for authorized review rather than silently rewritten. See [security and implementation boundaries](docs/SECURITY_AND_LIMITATIONS.md) and the full audit report.
 
-To populate complete fictional risks, milestones and deliverables for existing `Example` projects (Brand launch, Seasonal content and Product showcase), run `python scripts/add_project_examples.py`. This optional command backs up the local database, links contributors and tasks, includes a reviewed deliverable, and skips existing examples when repeated. It requires those three fictional projects and the demo contributors Nora Khalil and Youssef Amin. Databases and backups remain local and are excluded from Git.
+To explicitly add the 50 known demo accounts to an existing development database, first create the separate demo source, then run `python scripts/add_demo_accounts.py`. The importer backs up the target, adds missing accounts and applies the requested demo roles/passwords without reseeding business data. It uses the public demo password and must not be used to provision production users. Database files remain local and are not pushed to GitHub.

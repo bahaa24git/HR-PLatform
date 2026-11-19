@@ -152,9 +152,15 @@ tbody tr:hover { background: #29262f; }
 .stage-dot.won { background: #78b890; }
 .stage-dot.lost { background: #e17985; }
 .timeline, .timeline-event, .linked-record, .detail-item, .discussion-comment, .report-section { border-color: #38333e; }
+.detail-item { background: #2c2931; border: 1px solid #403947; }
+.detail-item dt { color: #b9adca; }
+.detail-item dd { color: #f0eaf7; }
+.detail-symbol { background: #382e43; color: #d3baf0; }
+.detail-tabs { color: #b2a5c2; }
+.detail-tabs span:first-child { color: #d4b8fa; }
 .linked-record { background: #28252d; color: #d0c8db; }
-.linked-record small, .timeline small, .detail-item dt, .detail-item small { color: #98909f; }
-.detail-item dd, .detail-grid strong { color: #d6cedf; }
+.linked-record small, .timeline small, .detail-item small { color: #98909f; }
+.detail-grid strong { color: #f0eaf7; }
 .info-strip, .change-warning { color: #c2b4d2; background: #302939; border-color: #48394f; }
 .helper, .empty, .empty p { color: #97909f; }
 .empty h3 { color: #c5bdce; }
